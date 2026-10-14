@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::config::{Paths, write_private};
 use crate::error::Result;
-use crate::naming::{app_aliases, kebab, slug};
+use crate::naming::{app_names, is_builtin, is_pt_br, kebab, slug};
 
 pub const SEPARATOR: &str = "__";
 const UNPREFIXED: &str = "geral";
@@ -54,10 +54,15 @@ impl Tool {
             .or_else(|| self.annotations.as_ref().and_then(|a| a.title.as_deref()))
     }
 
-    pub fn title_alias(&self) -> Option<String> {
+    pub fn pt_name(&self) -> Option<String> {
         self.display_title()
+            .filter(|t| is_pt_br(t))
             .map(slug)
-            .filter(|s| !s.is_empty() && *s != self.command_name())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn title_slug(&self) -> Option<String> {
+        self.display_title().map(slug).filter(|s| !s.is_empty())
     }
 
     pub fn read_only(&self) -> bool {
@@ -110,34 +115,124 @@ impl Tool {
         } else {
             first
         };
-        truncate(text, 90)
+        truncate(text, SUMMARY_WIDTH)
     }
 }
 
+pub const SUMMARY_WIDTH: usize = 80;
+pub const ELLIPSIS: char = '\u{2026}';
+
 pub fn truncate(text: &str, max: usize) -> String {
+    let text = text.trim();
     if text.chars().count() <= max {
         return text.to_string();
     }
-    let cut: String = text.chars().take(max - 3).collect();
-    format!("{}...", cut.trim_end())
+    let head: String = text.chars().take(max.saturating_sub(1)).collect();
+    let next_is_space = text.chars().nth(head.chars().count()).is_some_and(char::is_whitespace);
+    let cut = if next_is_space {
+        head.as_str()
+    } else {
+        match head.rfind(char::is_whitespace) {
+            Some(pos) if pos > 0 => &head[..pos],
+            _ => head.as_str(),
+        }
+    };
+    let cut = cut.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | ':' | '.' | '(' | '-'));
+    format!("{cut}{ELLIPSIS}")
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppCommand {
+    pub name: String,
+    pub aliases: Vec<String>,
+    pub tool: Tool,
+}
+
+impl AppCommand {
+    pub fn matches(&self, word: &str) -> bool {
+        self.name == word || self.aliases.iter().any(|a| a == word)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct App {
+    pub word: String,
     pub prefix: String,
     pub name: String,
     pub aliases: Vec<String>,
-    pub tools: Vec<Tool>,
+    pub commands: Vec<AppCommand>,
 }
 
 impl App {
     pub fn matches(&self, word: &str) -> bool {
-        self.prefix == word || self.aliases.iter().any(|a| a == word)
+        self.word == word || self.aliases.iter().any(|a| a == word)
     }
 
-    pub fn find_command(&self, command: &str) -> Option<&Tool> {
-        self.tools.iter().find(|t| t.command_name() == command)
+    pub fn find_command(&self, word: &str) -> Option<&AppCommand> {
+        self.commands
+            .iter()
+            .find(|c| c.name == word)
+            .or_else(|| self.commands.iter().find(|c| c.matches(word)))
     }
+
+    pub fn tools(&self) -> impl Iterator<Item = &Tool> {
+        self.commands.iter().map(|c| &c.tool)
+    }
+}
+
+fn claim(claimed: &mut Vec<String>, name: String) -> String {
+    claimed.push(name.clone());
+    name
+}
+
+pub fn name_commands(tools: Vec<Tool>) -> Vec<AppCommand> {
+    let english: Vec<String> = tools.iter().map(Tool::command_name).collect();
+    let mut order: Vec<usize> = (0..tools.len()).collect();
+    order.sort_by(|a, b| tools[*a].name.cmp(&tools[*b].name));
+    let mut names: Vec<Option<String>> = vec![None; tools.len()];
+    let mut claimed: Vec<String> = Vec::new();
+    for &i in &order {
+        let Some(pt) = tools[i].pt_name() else { continue };
+        let owned_elsewhere = english.iter().enumerate().any(|(j, e)| j != i && *e == pt);
+        if !owned_elsewhere && !claimed.contains(&pt) {
+            names[i] = Some(claim(&mut claimed, pt));
+        }
+    }
+    for &i in &order {
+        if names[i].is_some() {
+            continue;
+        }
+        let base = if english[i].is_empty() {
+            "comando"
+        } else {
+            english[i].as_str()
+        };
+        let mut name = base.to_string();
+        let mut n = 2;
+        while claimed.contains(&name) {
+            name = format!("{base}-{n}");
+            n += 1;
+        }
+        names[i] = Some(claim(&mut claimed, name));
+    }
+    let mut aliases: Vec<Vec<String>> = vec![Vec::new(); tools.len()];
+    for &i in &order {
+        for candidate in [Some(english[i].clone()), tools[i].title_slug()].into_iter().flatten() {
+            if !candidate.is_empty() && !claimed.contains(&candidate) {
+                aliases[i].push(claim(&mut claimed, candidate));
+            }
+        }
+    }
+    tools
+        .into_iter()
+        .zip(names)
+        .zip(aliases)
+        .map(|((tool, name), aliases)| AppCommand {
+            name: name.unwrap_or_default(),
+            aliases,
+            tool,
+        })
+        .collect()
 }
 
 pub fn group(tools: &[Tool]) -> Vec<App> {
@@ -148,31 +243,46 @@ pub fn group(tools: &[Tool]) -> Vec<App> {
             .or_default()
             .push(tool.clone());
     }
-    let mut apps: Vec<App> = by_prefix
+    let prefixes: Vec<String> = by_prefix.keys().cloned().collect();
+    let foreign_prefix = |word: &str, own: &str| word != own && prefixes.iter().any(|p| p == word);
+    let drafts: Vec<(String, String, Vec<String>, Vec<Tool>)> = by_prefix
         .into_iter()
         .map(|(prefix, tools)| {
-            let name = common_app_name(&tools).unwrap_or_else(|| prefix.clone());
-            let aliases = app_aliases(&prefix, Some(&name));
+            let name = common_app_name(&tools);
+            let names = app_names(&prefix, name.as_deref());
+            (prefix.clone(), name.unwrap_or(prefix), names, tools)
+        })
+        .collect();
+    let mut claimed: Vec<String> = Vec::new();
+    let mut words: Vec<String> = Vec::new();
+    for (prefix, _, names, _) in &drafts {
+        let own = names.iter().position(|n| n == prefix).unwrap_or(names.len());
+        let word = names
+            .iter()
+            .take(own + 1)
+            .find(|n| !is_builtin(n) && !claimed.contains(n) && !foreign_prefix(n, prefix))
+            .cloned()
+            .unwrap_or_else(|| format!("{prefix}-app"));
+        words.push(claim(&mut claimed, word));
+    }
+    drafts
+        .into_iter()
+        .zip(words)
+        .map(|((prefix, name, names, tools), word)| {
+            let aliases = names
+                .into_iter()
+                .filter(|n| !is_builtin(n) && !claimed.contains(n) && !foreign_prefix(n, &prefix))
+                .collect::<Vec<_>>();
+            claimed.extend(aliases.iter().cloned());
             App {
+                word,
                 prefix,
                 name,
                 aliases,
-                tools,
+                commands: name_commands(tools),
             }
         })
-        .collect();
-    let taken: Vec<String> = apps.iter().map(|a| a.prefix.clone()).collect();
-    let mut seen: Vec<String> = Vec::new();
-    for app in &mut apps {
-        app.aliases.retain(|alias| {
-            let free = !taken.contains(alias) && !seen.contains(alias);
-            if free {
-                seen.push(alias.clone());
-            }
-            free
-        });
-    }
-    apps
+        .collect()
 }
 
 fn common_app_name(tools: &[Tool]) -> Option<String> {
@@ -185,9 +295,12 @@ fn common_app_name(tools: &[Tool]) -> Option<String> {
 }
 
 pub fn find_app<'a>(apps: &'a [App], word: &str) -> Option<&'a App> {
-    apps.iter()
-        .find(|a| a.prefix == word)
-        .or_else(|| apps.iter().find(|a| a.matches(word)))
+    let exact = |w: &str| {
+        apps.iter()
+            .find(|a| a.word == w)
+            .or_else(|| apps.iter().find(|a| a.matches(w)))
+    };
+    exact(word).or_else(|| exact(&slug(word)))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -263,25 +376,102 @@ mod tests {
     }
 
     #[test]
-    fn groups_tools_by_prefix_with_names_and_aliases() {
+    fn groups_tools_under_pt_br_app_words() {
         let tools = vec![
             tool(
                 json!({"name": "tasks__list_tasks", "title": "Listar tarefas", "description": "Tarefas: Lists tasks. More.", "inputSchema": {}, "annotations": {"readOnlyHint": true}}),
             ),
             tool(json!({"name": "records__get_meeting", "description": "Reuniões: One meeting.", "inputSchema": {}})),
-            tool(json!({"name": "tasks__create_task", "description": "Tarefas: Creates a task.", "inputSchema": {}})),
+            tool(
+                json!({"name": "tasks__create_task", "title": "Create task", "description": "Tarefas: Creates a task.", "inputSchema": {}}),
+            ),
+            tool(
+                json!({"name": "muraldereconheci__give", "description": "Mural de Reconhecimento: Gives kudos.", "inputSchema": {}}),
+            ),
         ];
         let apps = group(&tools);
-        assert_eq!(apps.len(), 2);
-        assert_eq!(apps[0].prefix, "records");
-        assert_eq!(apps[0].name, "Reuniões");
-        assert_eq!(apps[0].aliases, vec!["reunioes", "gravador"]);
-        assert_eq!(apps[1].prefix, "tasks");
-        assert_eq!(apps[1].tools.len(), 2);
-        assert!(find_app(&apps, "tarefas").is_some());
-        assert_eq!(apps[1].find_command("create-task").unwrap().name, "tasks__create_task");
-        assert_eq!(apps[1].tools[0].title_alias().as_deref(), Some("listar-tarefas"));
-        assert_eq!(apps[1].tools[0].summary(), "Lists tasks");
+        let words: Vec<&str> = apps.iter().map(|a| a.word.as_str()).collect();
+        assert_eq!(words, vec!["mural", "reunioes", "tarefas"]);
+        assert_eq!(apps[1].name, "Reuniões");
+        assert_eq!(apps[1].aliases, vec!["records", "meetings", "gravador"]);
+        assert_eq!(apps[2].aliases, vec!["tasks"]);
+        for word in ["tarefas", "tasks", "Tarefas", "reuniões", "mural-de-reconhecimento"] {
+            assert!(find_app(&apps, word).is_some(), "{word}");
+        }
+        let tasks = &apps[2];
+        let list = tasks.find_command("listar-tarefas").unwrap();
+        assert_eq!(list.name, "listar-tarefas");
+        assert_eq!(list.aliases, vec!["list-tasks"]);
+        assert_eq!(tasks.find_command("list-tasks").unwrap().tool.name, "tasks__list_tasks");
+        let create = tasks.find_command("create-task").unwrap();
+        assert_eq!(create.name, "create-task");
+        assert!(create.aliases.is_empty());
+        assert_eq!(list.tool.summary(), "Lists tasks");
+    }
+
+    #[test]
+    fn command_names_are_unique_and_stable() {
+        let tools = vec![
+            tool(json!({"name": "a__z_second", "title": "Ver tarefa", "inputSchema": {}})),
+            tool(json!({"name": "a__a_first", "title": "Ver tarefa", "inputSchema": {}})),
+            tool(json!({"name": "a__ver_projeto", "inputSchema": {}})),
+            tool(json!({"name": "a__other", "title": "Ver projeto", "inputSchema": {}})),
+        ];
+        let commands = name_commands(tools.clone());
+        let named: Vec<(&str, &str)> = commands
+            .iter()
+            .map(|c| (c.tool.short_name(), c.name.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                ("z_second", "z-second"),
+                ("a_first", "ver-tarefa"),
+                ("ver_projeto", "ver-projeto"),
+                ("other", "other")
+            ]
+        );
+        let mut reversed = tools;
+        reversed.reverse();
+        let again = name_commands(reversed);
+        for command in &commands {
+            let same = again.iter().find(|c| c.tool.name == command.tool.name).unwrap();
+            assert_eq!(same.name, command.name);
+            assert_eq!(same.aliases, command.aliases);
+        }
+        let mut all: Vec<&String> = commands
+            .iter()
+            .flat_map(|c| std::iter::once(&c.name).chain(&c.aliases))
+            .collect();
+        let total = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), total);
+    }
+
+    #[test]
+    fn app_words_never_shadow_builtins_or_other_prefixes() {
+        let tools = vec![
+            tool(json!({"name": "config__x", "inputSchema": {}})),
+            tool(json!({"name": "tarefas__y", "inputSchema": {}})),
+            tool(json!({"name": "tasks__z", "description": "Tarefas: z.", "inputSchema": {}})),
+        ];
+        let apps = group(&tools);
+        let words: Vec<&str> = apps.iter().map(|a| a.word.as_str()).collect();
+        assert_eq!(words, vec!["config-app", "tarefas", "tasks"]);
+        assert!(apps[0].aliases.is_empty());
+    }
+
+    #[test]
+    fn truncates_at_word_boundaries() {
+        assert_eq!(truncate("short text", 20), "short text");
+        assert_eq!(
+            truncate("Lists the tasks of one view in the board", 20),
+            "Lists the tasks of\u{2026}"
+        );
+        assert_eq!(truncate("Lists, tasks, everywhere", 14), "Lists, tasks\u{2026}");
+        assert_eq!(truncate("Supercalifragilistic", 10), "Supercali\u{2026}");
+        assert_eq!(truncate("one two", 4), "one\u{2026}");
     }
 
     #[test]

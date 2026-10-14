@@ -1,7 +1,7 @@
 use clap::{Arg, ArgAction, Command, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
-use crate::catalog::{App, Tool};
+use crate::catalog::{App, AppCommand, Tool};
 use crate::schema;
 
 const TEMPLATE: &str = "{about-with-newline}\nUso: {usage}\n\n{all-args}{after-help}";
@@ -178,7 +178,7 @@ pub fn localize(cmd: Command) -> Command {
 }
 
 pub fn root_command(after_help: Option<String>) -> Command {
-    let mut cmd = Cli::command().arg(
+    let mut cmd = Cli::command().override_usage("etus [OPÇÕES] [COMANDO]").arg(
         Arg::new("version")
             .short('V')
             .long("version")
@@ -191,16 +191,29 @@ pub fn root_command(after_help: Option<String>) -> Command {
     localize(cmd)
 }
 
+pub fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+pub fn app_line_aliases(app: &App) -> String {
+    if app.aliases.is_empty() {
+        String::new()
+    } else {
+        format!("também: {}", app.aliases.join(", "))
+    }
+}
+
 pub fn apps_after_help(apps: &[App]) -> String {
     let mut text = String::from("Apps (do catálogo em cache; `etus atualizar` renova):\n");
-    let width = apps.iter().map(|a| a.prefix.len()).max().unwrap_or(0);
+    let width = apps.iter().map(|a| a.word.chars().count()).max().unwrap_or(0);
     for app in apps {
-        let aliases = if app.aliases.is_empty() {
-            String::new()
+        let aliases = app_line_aliases(app);
+        let line = format!("  {:width$}  {}", app.word, app.name);
+        if aliases.is_empty() {
+            text.push_str(&format!("{line}\n"));
         } else {
-            format!(" ({})", app.aliases.join(", "))
-        };
-        text.push_str(&format!("  {:width$}  {}{}\n", app.prefix, app.name, aliases));
+            text.push_str(&format!("{line} ({aliases})\n"));
+        }
     }
     text.push_str("\nAgentes: `etus <app> --help` lista os comandos; use --json para saída compacta.");
     text
@@ -260,8 +273,22 @@ fn tool_kind(tool: &Tool) -> &'static str {
     }
 }
 
-pub fn tool_command(app: &App, tool: &Tool, taken: &mut Vec<String>, standalone: bool) -> Command {
-    let name = tool.command_name();
+pub struct Invocation<'a> {
+    pub app: &'a str,
+    pub command: Option<&'a str>,
+}
+
+impl<'a> Invocation<'a> {
+    pub fn canonical(app: &'a App) -> Self {
+        Invocation {
+            app: &app.word,
+            command: None,
+        }
+    }
+}
+
+pub fn tool_command(command: &AppCommand, invocation: &Invocation, standalone: bool) -> Command {
+    let tool = &command.tool;
     let params = schema::params(&tool.input_schema);
     let summary = if tool.writes() {
         format!("{} [altera]", tool.summary())
@@ -275,8 +302,12 @@ pub fn tool_command(app: &App, tool: &Tool, taken: &mut Vec<String>, standalone:
     }
     long.push_str(tool.description_body());
     let long = long.trim().to_string();
+    let typed = invocation
+        .command
+        .filter(|word| command.matches(word))
+        .unwrap_or(&command.name);
     let example = schema::example(&params);
-    let mut usage_line = format!("etus {} {}", app.prefix, name);
+    let mut usage_line = format!("etus {} {}", invocation.app, typed);
     if !example.is_empty() {
         usage_line.push(' ');
         usage_line.push_str(&example);
@@ -284,40 +315,51 @@ pub fn tool_command(app: &App, tool: &Tool, taken: &mut Vec<String>, standalone:
     if tool.writes() {
         usage_line.push_str(" --yes");
     }
-    let after = format!(
-        "Exemplo:\n  {usage_line}\n\nFerramenta MCP: {} ({}).\nArgumentos também por --json '{{...}}' ou --input arquivo.json (- lê do stdin).",
+    let mut after = format!("Exemplo:\n  {usage_line}\n\n");
+    let others: Vec<&str> = std::iter::once(&command.name)
+        .chain(&command.aliases)
+        .map(String::as_str)
+        .filter(|form| *form != typed)
+        .collect();
+    if !others.is_empty() {
+        after.push_str(&format!("Também aceita: {}.\n", others.join(", ")));
+    }
+    after.push_str(&format!(
+        "Ferramenta MCP: {} ({}).\nArgumentos também por --json '{{...}}' ou --input arquivo.json (- lê do stdin).",
         tool.name,
         tool_kind(tool)
-    );
-    let mut cmd = Command::new(name.clone())
+    ));
+    let cmd = Command::new(command.name.clone())
+        .override_usage(format!("etus {} {} [OPÇÕES]", invocation.app, typed))
         .about(summary)
         .before_help(long)
         .after_help(after)
+        .aliases(command.aliases.clone())
         .args(schema::to_args(&params));
-    taken.push(name);
-    if let Some(alias) = tool.title_alias().filter(|a| !taken.contains(a)) {
-        taken.push(alias.clone());
-        cmd = cmd.visible_alias(alias);
-    }
     let cmd = input_flag(cmd);
     if standalone { standalone_flags(cmd) } else { cmd }
 }
 
-pub fn app_command(app: &App) -> Command {
-    localize(build_app_command(app, true))
+pub fn app_command(app: &App, invocation: &Invocation) -> Command {
+    localize(build_app_command(app, invocation, true))
 }
 
-fn build_app_command(app: &App, standalone: bool) -> Command {
-    let mut taken: Vec<String> = app.tools.iter().map(Tool::command_name).collect();
-    let mut cmd = Command::new(app.prefix.clone())
-        .bin_name(format!("etus {}", app.prefix))
-        .about(format!("{}: {} comandos", app.name, app.tools.len()))
-        .after_help(format!("Ajuda de um comando: etus {} <comando> --help", app.prefix))
-        .visible_aliases(app.aliases.clone())
+fn build_app_command(app: &App, invocation: &Invocation, standalone: bool) -> Command {
+    let mut cmd = Command::new(invocation.app.to_string())
+        .bin_name(format!("etus {}", invocation.app))
+        .about(format!(
+            "{}: {}",
+            app.name,
+            count(app.commands.len(), "comando", "comandos")
+        ))
+        .after_help(format!("Ajuda de um comando: etus {} <comando> --help", invocation.app))
         .subcommand_required(true)
         .arg_required_else_help(true);
-    for tool in &app.tools {
-        cmd = cmd.subcommand(tool_command(app, tool, &mut taken, standalone));
+    if invocation.app == app.word {
+        cmd = cmd.visible_aliases(app.aliases.clone());
+    }
+    for command in &app.commands {
+        cmd = cmd.subcommand(tool_command(command, invocation, standalone));
     }
     cmd
 }
@@ -325,9 +367,7 @@ fn build_app_command(app: &App, standalone: bool) -> Command {
 pub fn full_command(apps: &[App]) -> Command {
     let mut cmd = Cli::command();
     for app in apps {
-        if !crate::naming::BUILTIN_COMMANDS.contains(&app.prefix.as_str()) {
-            cmd = cmd.subcommand(build_app_command(app, false));
-        }
+        cmd = cmd.subcommand(build_app_command(app, &Invocation::canonical(app), false));
     }
     localize(
         cmd.arg(
@@ -366,7 +406,7 @@ mod tests {
     fn apps() -> Vec<App> {
         let tools: Vec<Tool> = serde_json::from_value(json!([
             {"name": "tasks__list_tasks", "title": "Listar tarefas", "description": "Tarefas: Lists tasks.", "inputSchema": {"type": "object", "properties": {"view": {"type": "string", "enum": ["inbox", "today"]}}, "required": ["view"]}, "annotations": {"readOnlyHint": true}},
-            {"name": "tasks__create_task", "title": "Criar tarefa", "description": "Tarefas: Creates a task.", "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}, "annotations": {"readOnlyHint": false, "destructiveHint": false}}
+            {"name": "tasks__create_task", "title": "Criar tarefa", "description": "Tarefas: Creates a task as the person, in the inbox or in a project board, with a due date and a priority.", "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}, "annotations": {"readOnlyHint": false, "destructiveHint": false}}
         ]))
         .unwrap();
         group(&tools)
@@ -390,42 +430,75 @@ mod tests {
         }
     }
 
+    fn render_help(app: &App, argv: &[&str]) -> String {
+        let invocation = Invocation {
+            app: argv[0],
+            command: argv.get(1).copied(),
+        };
+        let error = app_command(app, &invocation).try_get_matches_from(argv).unwrap_err();
+        assert_eq!(error.exit_code(), 0);
+        error.to_string()
+    }
+
     #[test]
     fn app_commands_are_generated_from_tools() {
         let apps = apps();
-        let cmd = app_command(&apps[0]);
+        let app = &apps[0];
+        assert_eq!(app.word, "tarefas");
+        let cmd = app_command(app, &Invocation::canonical(app));
         let matches = cmd
             .clone()
-            .try_get_matches_from(["tasks", "listar-tarefas", "--view", "today", "--json"])
+            .try_get_matches_from(["tarefas", "list-tasks", "--view", "today", "--json"])
             .unwrap();
         let (name, sub) = matches.subcommand().unwrap();
-        assert_eq!(name, "list-tasks");
+        assert_eq!(name, "listar-tarefas");
         assert_eq!(sub.get_one::<String>("view").unwrap(), "today");
         assert_eq!(sub.get_one::<String>("json").unwrap(), "");
         let with_object = cmd
             .clone()
-            .try_get_matches_from(["tasks", "create-task", "--json", "{\"title\":\"x\"}"])
+            .try_get_matches_from(["tarefas", "criar-tarefa", "--json", "{\"title\":\"x\"}"])
             .unwrap();
-        assert_eq!(
-            with_object.subcommand().unwrap().1.get_one::<String>("json").unwrap(),
-            "{\"title\":\"x\"}"
-        );
-        let help = cmd
-            .clone()
-            .try_get_matches_from(["tasks", "create-task", "--help"])
-            .unwrap_err();
-        assert_eq!(help.exit_code(), 0);
-        let rendered = help.to_string();
-        assert!(rendered.contains("--title"));
-        assert!(rendered.contains("etus tasks create-task --title <title> --yes"));
-        let unknown = cmd.try_get_matches_from(["tasks", "nope"]).unwrap_err();
+        let (name, sub) = with_object.subcommand().unwrap();
+        assert_eq!(name, "criar-tarefa");
+        assert_eq!(sub.get_one::<String>("json").unwrap(), "{\"title\":\"x\"}");
+        let unknown = cmd.try_get_matches_from(["tarefas", "nope"]).unwrap_err();
         assert_eq!(unknown.exit_code(), 2);
+    }
+
+    #[test]
+    fn help_uses_the_words_the_person_typed() {
+        let apps = apps();
+        let app = &apps[0];
+        let pt = render_help(app, &["tarefas", "--help"]);
+        assert!(pt.contains("Uso: etus tarefas <COMANDO>"), "{pt}");
+        assert!(pt.contains("listar-tarefas") && pt.contains("criar-tarefa"));
+        let en = render_help(app, &["tasks", "--help"]);
+        assert!(en.contains("Uso: etus tasks <COMANDO>"), "{en}");
+        let tool = render_help(app, &["tasks", "create-task", "--help"]);
+        assert!(tool.contains("Uso: etus tasks create-task"), "{tool}");
+        assert!(tool.contains("etus tasks create-task --title <title> --yes"));
+        assert!(tool.contains("--title"));
+        assert!(tool.contains("Creates a task as the person, in the inbox or in a project board"));
+        let canonical = render_help(app, &["tarefas", "criar-tarefa", "--help"]);
+        assert!(canonical.contains("Uso: etus tarefas criar-tarefa"), "{canonical}");
+        assert!(canonical.contains("Também aceita: create-task."));
+        assert!(tool.contains("Também aceita: criar-tarefa."));
+    }
+
+    #[test]
+    fn long_descriptions_are_cut_in_the_list_only() {
+        let apps = apps();
+        let help = render_help(&apps[0], &["tarefas", "--help"]);
+        assert!(help.contains("\u{2026}"), "{help}");
+        assert!(!help.contains("due date and a priority"));
+        assert!(!help.contains("alias"));
     }
 
     #[test]
     fn full_command_includes_apps_for_completions() {
         let cmd = full_command(&apps());
-        assert!(cmd.get_subcommands().any(|s| s.get_name() == "tasks"));
+        let tasks = cmd.get_subcommands().find(|s| s.get_name() == "tarefas").unwrap();
+        assert!(tasks.get_all_aliases().any(|a| a == "tasks"));
         cmd.debug_assert();
     }
 
