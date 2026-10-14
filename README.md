@@ -39,7 +39,25 @@ etus apps             # apps que você pode usar
 - Precisa da permissão "Conectar agentes externos" no hub, na empresa ativa.
 - `etus logout` revoga a sessão no hub e apaga o token desta máquina.
 
-O token fica no chaveiro do sistema (macOS e Windows) ou em um arquivo com permissão 0600 na pasta de configuração (Linux, ou quando o chaveiro falha). Nada de token aparece em log ou saída.
+### Onde o token fica
+
+No macOS e no Linux o token fica em um arquivo com permissão 0600 na pasta de configuração (`tokens-<hash>.json`; `etus config` mostra o caminho), como fazem o `gh`, o `gcloud` e o `aws`. Nada de token aparece em log ou saída, exceto em `etus token`.
+
+- **Por que não o chaveiro por padrão:** o binário é assinado ad hoc, então cada versão nova tem outra identidade e o macOS volta a pedir permissão para ler o item `etus-cli`. Num agente de código rodando `etus` sem terminal, essa janela trava o comando.
+- **Quem vem da 0.2.0:** o primeiro comando rodado num terminal lê o token do chaveiro uma vez (pode aparecer uma última janela), grava no arquivo e apaga o item do chaveiro. Sem terminal, o etus não tenta ler o chaveiro: sai com código 3 pedindo `etus login`. Se a leitura falhar ou for negada, também pede `etus login`.
+- **Usar o chaveiro mesmo assim:** `etus config armazenamento chaveiro` (move o token para lá) ou `ETUS_TOKEN_STORE=keychain` na sessão. Para voltar: `etus config armazenamento arquivo`. A variável vale mais que a configuração.
+- **Chaveiro sem terminal:** com o chaveiro escolhido no macOS, qualquer comando sem terminal (stdin ou stdout que não é terminal, como em agentes e em `$(...)`) sai na hora com código 3 em vez de esperar a janela. Para scripts e agentes, use o arquivo.
+- **Windows:** continua no Gerenciador de Credenciais por padrão, que não abre janela; `etus config armazenamento arquivo` troca para arquivo.
+- **Linux:** não há chaveiro suportado; o token fica sempre no arquivo.
+
+### Token para scripts
+
+```sh
+MCP_TOKEN=$(etus token)          # access token válido, renovado se estiver perto de expirar
+etus token --json                # {"accessToken": "...", "expiresAt": 1760000000}
+```
+
+O token é um segredo: dá acesso à sua conta enquanto valer. Não cole em chat, log, issue nem arquivo versionado. Para não ficar visível na tela, `etus token` se recusa a imprimir quando a saída é um terminal (código 2); `--force` imprime mesmo assim. Útil para suítes de avaliação e scripts que chamam o gateway MCP direto.
 
 ## Usar
 
@@ -105,7 +123,8 @@ Com `--json`, a saída é o `structuredContent` da ferramenta ou o texto dela j�
 | Perfil | `--perfil ID` ou `etus perfil usar ID` / `etus perfil limpar`; vai ao gateway como `?perfil=ID` |
 | Cache do catálogo | 5 minutos (`cache_ttl_secs` no arquivo); `etus atualizar` renova na hora |
 | Arquivo | `config.json` na pasta de configuração do usuário (`etus config` mostra o caminho) |
-| Pastas | `ETUS_CONFIG_DIR` troca a pasta inteira; `ETUS_TOKEN_STORE=file` força o arquivo em vez do chaveiro |
+| Pastas | `ETUS_CONFIG_DIR` troca a pasta inteira |
+| Token | `etus config armazenamento arquivo` ou `chaveiro` (`token_store` no arquivo), ou `ETUS_TOKEN_STORE=file` ou `keychain`, que vale mais; padrão arquivo no macOS e no Linux, Gerenciador de Credenciais no Windows |
 
 Autocompletar: `etus completions zsh > ~/.zfunc/_etus` (também bash, fish, powershell, elvish).
 
@@ -115,8 +134,12 @@ Autocompletar: `etus completions zsh > ~/.zfunc/_etus` (também bash, fish, powe
 cargo test                                  # unitários e integração com um gateway MCP falso
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
-cargo test keychain -- --ignored            # testa o chaveiro do macOS de verdade
+cargo test keychain -- --ignored            # testa o chaveiro do sistema de verdade
 ```
+
+## Próximo passo: assinatura estável
+
+A correção certa para quem quer o chaveiro, e para distribuir o binário, é assinar com um certificado Developer ID (e notarizar). Com uma identidade de código estável entre versões, o macOS reconhece o `etus` atualizado como o mesmo programa e não pede permissão de novo a cada atualização. Hoje o binário é assinado ad hoc (`codesign -dv` mostra `Signature=adhoc`), por isso o arquivo é o padrão. Fica como follow up: assinar e notarizar no fluxo de release e, depois disso, reavaliar o chaveiro como padrão no macOS.
 
 ## Publicar uma versão
 
@@ -124,7 +147,8 @@ cargo test keychain -- --ignored            # testa o chaveiro do macOS de verda
 2. Gere os binários:
    ```sh
    cargo build --release --target aarch64-apple-darwin
-   cargo build --release --target x86_64-apple-darwin
+   TC=~/.rustup/toolchains/stable-aarch64-apple-darwin/bin
+   RUSTC=$TC/rustc $TC/cargo build --release --target x86_64-apple-darwin   # o cargo do Homebrew não tem a std do x86_64
    cargo zigbuild --release --target x86_64-unknown-linux-gnu   # se tiver cargo-zigbuild
    ```
 3. Renomeie para `etus-<arch>-<os>` (`etus-aarch64-macos`, `etus-x86_64-macos`, `etus-x86_64-linux`), gere `<nome>.sha256` com `shasum -a 256` e crie a release com a tag `vX.Y.Z` anexando os binários e os `.sha256`. O `etus atualizar-cli` procura exatamente esses nomes e confere o sha256 quando existe.

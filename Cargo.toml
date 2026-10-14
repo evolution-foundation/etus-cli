@@ -1,6 +1,6 @@
 [package]
 name = "etus"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.89"
 description = "CLI global da plataforma ETUS: comandos gerados a partir das ferramentas MCP de cada app"

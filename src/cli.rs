@@ -1,6 +1,7 @@
 use clap::{Arg, ArgAction, Command, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
+use crate::auth::store::StoreKind;
 use crate::catalog::{App, AppCommand, Tool};
 use crate::schema;
 
@@ -98,10 +99,35 @@ pub enum Commands {
         #[arg(long, help = "Só verifica se há versão nova")]
         verificar: bool,
     },
-    #[command(about = "Mostra a configuração em uso e onde ela fica")]
-    Config,
+    #[command(about = "Mostra a configuração em uso ou escolhe onde guardar o token")]
+    Config {
+        #[command(subcommand)]
+        acao: Option<ConfigCmd>,
+    },
+    #[command(
+        about = "Para scripts: imprime um access token válido (é um segredo)",
+        long_about = "Para scripts e suítes de avaliação: imprime no stdout um access token válido, renovado se estiver perto de expirar.\n\nATENÇÃO: o token é um segredo e dá acesso à sua conta. Não cole em chat, log ou arquivo versionado.\n\nExemplo: MCP_TOKEN=$(etus token)\n\nRecusa quando a saída é um terminal, para o token não ficar visível na tela; use --force para imprimir mesmo assim."
+    )]
+    Token {
+        #[arg(long, help = "Imprime mesmo quando a saída é um terminal")]
+        force: bool,
+    },
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCmd {
+    #[command(about = "Mostra a configuração em uso e onde ela fica")]
+    Mostrar,
+    #[command(
+        alias = "token-store",
+        about = "Escolhe onde guardar o token: arquivo (padrão) ou chaveiro do sistema"
+    )]
+    Armazenamento {
+        #[arg(value_enum, value_name = "ONDE", help = "arquivo ou chaveiro")]
+        onde: StoreKind,
+    },
 }
 
 #[derive(Debug, Subcommand)]
