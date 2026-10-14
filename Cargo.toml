@@ -1,0 +1,35 @@
+[package]
+name = "etus"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "CLI global da plataforma ETUS: comandos gerados a partir das ferramentas MCP de cada app"
+repository = "https://github.com/evolution-foundation/etus-cli"
+publish = false
+
+[[bin]]
+name = "etus"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+clap = { version = "4.5", features = ["derive", "string", "env", "wrap_help"] }
+clap_complete = "4.5"
+directories = "6"
+getrandom = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"
+panic = "abort"
+
+[dev-dependencies]

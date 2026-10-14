@@ -1,0 +1,376 @@
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
+
+use base64::Engine;
+use etus::auth::Tokens;
+use etus::auth::store::{FileStore, SecretStore};
+use etus::config::Paths;
+use etus::mcp::{McpClient, TokenSource};
+use serde_json::{Value, json};
+
+#[derive(Debug, Clone)]
+struct Recorded {
+    target: String,
+    authorization: String,
+    body: Value,
+}
+
+struct FakeHub {
+    url: String,
+    requests: Arc<Mutex<Vec<Recorded>>>,
+}
+
+fn token_for(sub: &str) -> String {
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json!({"sub": sub}).to_string());
+    format!("eyJhbGciOiJub25lIn0.{payload}.sig")
+}
+
+fn tools() -> Value {
+    json!([
+        {"name": "hub__whoami", "title": "Quem sou eu", "description": "ETUS Platforms: who is connected.", "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": true, "destructiveHint": false}},
+        {"name": "tasks__list_tasks", "title": "Listar tarefas", "description": "Tarefas: Lists tasks of one view.", "inputSchema": {"type": "object", "properties": {"view": {"type": "string", "enum": ["inbox", "today"]}, "limit": {"type": "integer"}}, "required": ["view"]}, "annotations": {"readOnlyHint": true, "destructiveHint": false}},
+        {"name": "tasks__create_task", "title": "Criar tarefa", "description": "Tarefas: Creates a task as the person.", "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "priority": {"anyOf": [{"const": 1, "type": "number"}, {"const": 4, "type": "number"}]}}, "required": ["title"]}, "annotations": {"readOnlyHint": false, "destructiveHint": false}},
+        {"name": "tasks__broken", "title": "Quebrada", "description": "Tarefas: Always fails.", "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": true}},
+        {"name": "tasks__revoked", "title": "Revogada", "description": "Tarefas: Listed but no longer allowed.", "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": true}}
+    ])
+}
+
+fn rpc_reply(body: &Value) -> (String, String) {
+    let id = body["id"].clone();
+    let method = body["method"].as_str().unwrap_or("");
+    let ok = |result: Value| json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+    let json_ct = "application/json".to_string();
+    match method {
+        "tools/list" => (json_ct, ok(json!({"tools": tools()}))),
+        "tools/call" => {
+            let name = body["params"]["name"].as_str().unwrap_or("");
+            let args = body["params"]["arguments"].clone();
+            match name {
+                "hub__whoami" => {
+                    let me = json!({"person": {"id": "usr_1", "name": "Ana", "email": "ana@etus.io", "platformAdmin": false}, "activeCompany": {"id": "org_1", "name": "Etus", "slug": "etus", "role": "member"}, "companies": [], "access": "read_write"});
+                    (json_ct, ok(json!({"content": [{"type": "text", "text": me.to_string()}], "structuredContent": me})))
+                }
+                "tasks__list_tasks" => (json_ct, ok(json!({"content": [{"type": "text", "text": args.to_string()}]}))),
+                "tasks__create_task" => {
+                    let message = json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": json!({"created": args}).to_string()}]}});
+                    ("text/event-stream".into(), format!("event: message\ndata: {message}\n\n"))
+                }
+                "tasks__broken" => (json_ct, ok(json!({"content": [{"type": "text", "text": "Task not found"}], "isError": true}))),
+                _ => (
+                    json_ct,
+                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": format!("Unknown tool: {name}")}}).to_string(),
+                ),
+            }
+        }
+        _ => (
+            json_ct,
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Method not found"}}).to_string(),
+        ),
+    }
+}
+
+fn handle(mut stream: TcpStream, good: &str, requests: &Mutex<Vec<Recorded>>) {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let header_end = loop {
+        let n = stream.read(&mut chunk).unwrap_or(0);
+        if n == 0 {
+            return;
+        }
+        buffer.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
+        }
+    };
+    let head = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+    let header = |name: &str| {
+        head.lines()
+            .find_map(|l| {
+                l.split_once(':')
+                    .filter(|(k, _)| k.trim().eq_ignore_ascii_case(name))
+                    .map(|(_, v)| v.trim().to_string())
+            })
+            .unwrap_or_default()
+    };
+    let length: usize = header("content-length").parse().unwrap_or(0);
+    while buffer.len() < header_end + length {
+        let n = stream.read(&mut chunk).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..n]);
+    }
+    let target = head
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("")
+        .to_string();
+    let body: Value = serde_json::from_slice(&buffer[header_end..]).unwrap_or(Value::Null);
+    let authorization = header("authorization");
+    requests.lock().unwrap().push(Recorded {
+        target,
+        authorization: authorization.clone(),
+        body: body.clone(),
+    });
+    let (status, content_type, payload) = if authorization != format!("Bearer {good}") {
+        (
+            "401 Unauthorized",
+            "application/json".to_string(),
+            r#"{"error":"unauthenticated"}"#.to_string(),
+        )
+    } else {
+        let (ct, text) = rpc_reply(&body);
+        ("200 OK", ct, text)
+    };
+    let response = format!(
+        "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
+        payload.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn start(good: String) -> FakeHub {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let shared = requests.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            handle(stream, &good, &shared);
+        }
+    });
+    FakeHub { url, requests }
+}
+
+fn temp_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("etus-it-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn login_as(dir: &Path, hub: &str, access_token: &str) {
+    let tokens = Tokens {
+        access_token: access_token.into(),
+        refresh_token: None,
+        expires_at: etus::catalog::now_secs() + 3600,
+        scope: Some("mcp".into()),
+        client_id: "mcp_test".into(),
+        token_endpoint: format!("{hub}/oauth/token"),
+        revocation_endpoint: None,
+        resource: format!("{hub}/mcp"),
+    };
+    FileStore {
+        path: Paths::at(dir).tokens_file(hub),
+    }
+    .save(&tokens)
+    .unwrap();
+}
+
+fn etus(dir: &Path, hub: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_etus"))
+        .args(args)
+        .env("ETUS_CONFIG_DIR", dir)
+        .env("ETUS_TOKEN_STORE", "file")
+        .env("ETUS_HUB_URL", hub)
+        .env("NO_PROXY", "127.0.0.1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn calls(hub: &FakeHub, tool: &str) -> usize {
+    hub.requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.body["method"] == "tools/call" && r.body["params"]["name"] == tool)
+        .count()
+}
+
+struct Static(String);
+
+impl TokenSource for Static {
+    fn access_token(&self, _rejected: Option<&str>) -> etus::error::Result<String> {
+        Ok(self.0.clone())
+    }
+}
+
+#[test]
+fn client_lists_and_calls_tools() {
+    let token = token_for("u1");
+    let hub = start(token.clone());
+    let http = reqwest::blocking::Client::new();
+    let source = Static(token.clone());
+    let client = McpClient::new(&http, format!("{}/mcp", hub.url), &source);
+    let listed = client.list_tools().unwrap();
+    assert_eq!(listed.len(), 5);
+    let outcome = client
+        .call_tool("tasks__list_tasks", &json!({"view": "today"}))
+        .unwrap();
+    assert!(!outcome.is_error);
+    assert_eq!(etus::output::payload(&outcome.result), json!({"view": "today"}));
+    let streamed = client.call_tool("tasks__create_task", &json!({"title": "x"})).unwrap();
+    assert_eq!(
+        etus::output::payload(&streamed.result),
+        json!({"created": {"title": "x"}})
+    );
+    let recorded = hub.requests.lock().unwrap().clone();
+    assert!(recorded.iter().all(|r| r.authorization == format!("Bearer {token}")));
+    assert!(recorded.iter().all(|r| r.target == "/mcp"));
+}
+
+#[test]
+fn cli_end_to_end_against_fake_gateway() {
+    let token = token_for("u1");
+    let hub = start(token.clone());
+    let dir = temp_dir("e2e");
+
+    let anonymous = etus(&dir, &hub.url, &["apps"]);
+    assert_eq!(anonymous.status.code(), Some(3));
+
+    login_as(&dir, &hub.url, &token);
+
+    let apps = etus(&dir, &hub.url, &["apps", "--json"]);
+    assert_eq!(apps.status.code(), Some(0), "{}", String::from_utf8_lossy(&apps.stderr));
+    let listed: Value = serde_json::from_str(&stdout(&apps)).unwrap();
+    let tasks = listed.as_array().unwrap().iter().find(|a| a["app"] == "tasks").unwrap();
+    assert_eq!(tasks["name"], "Tarefas");
+    assert!(tasks["aliases"].as_array().unwrap().contains(&json!("tarefas")));
+
+    let help = etus(&dir, &hub.url, &["--help"]);
+    assert!(stdout(&help).contains("tasks"));
+
+    let app_help = etus(&dir, &hub.url, &["tarefas", "--help"]);
+    assert_eq!(app_help.status.code(), Some(0));
+    assert!(stdout(&app_help).contains("list-tasks") && stdout(&app_help).contains("create-task"));
+
+    let list = etus(
+        &dir,
+        &hub.url,
+        &["tarefas", "list-tasks", "--view", "inbox", "--limit", "3", "--json"],
+    );
+    assert_eq!(list.status.code(), Some(0), "{}", String::from_utf8_lossy(&list.stderr));
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&list)).unwrap(),
+        json!({"view": "inbox", "limit": 3})
+    );
+
+    let alias = etus(
+        &dir,
+        &hub.url,
+        &["tasks", "listar-tarefas", "--json", r#"{"view":"today"}"#],
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&alias)).unwrap(),
+        json!({"view": "today"})
+    );
+
+    let missing = etus(&dir, &hub.url, &["tasks", "list-tasks"]);
+    assert_eq!(missing.status.code(), Some(2));
+
+    let bad_enum = etus(&dir, &hub.url, &["tasks", "list-tasks", "--json", r#"{"view":"week"}"#]);
+    assert_eq!(bad_enum.status.code(), Some(2));
+
+    let refused = etus(&dir, &hub.url, &["tasks", "create-task", "--title", "Comprar café"]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("--yes"));
+    assert_eq!(calls(&hub, "tasks__create_task"), 0);
+
+    let dry = etus(
+        &dir,
+        &hub.url,
+        &[
+            "tasks",
+            "create-task",
+            "--title",
+            "Comprar café",
+            "--priority",
+            "1",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(dry.status.code(), Some(0));
+    let plan: Value = serde_json::from_str(&stdout(&dry)).unwrap();
+    assert_eq!(plan["tool"], "tasks__create_task");
+    assert_eq!(plan["arguments"], json!({"title": "Comprar café", "priority": 1}));
+    assert_eq!(calls(&hub, "tasks__create_task"), 0);
+
+    let created = etus(
+        &dir,
+        &hub.url,
+        &["tasks", "create-task", "--title", "Comprar café", "--yes", "--json"],
+    );
+    assert_eq!(
+        created.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&created)).unwrap(),
+        json!({"created": {"title": "Comprar café"}})
+    );
+    assert_eq!(calls(&hub, "tasks__create_task"), 1);
+
+    let broken = etus(&dir, &hub.url, &["tasks", "broken"]);
+    assert_eq!(broken.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&broken.stderr).contains("Task not found"));
+
+    let revoked = etus(&dir, &hub.url, &["tasks", "revoked", "--json"]);
+    assert_eq!(revoked.status.code(), Some(4));
+    let error: Value = serde_json::from_str(String::from_utf8_lossy(&revoked.stderr).trim()).unwrap();
+    assert_eq!(error["error"]["exitCode"], 4);
+
+    let unknown = etus(&dir, &hub.url, &["nada", "x"]);
+    assert_eq!(unknown.status.code(), Some(2));
+
+    let me = etus(&dir, &hub.url, &["whoami", "--json"]);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&me)).unwrap()["activeCompany"]["id"],
+        "org_1"
+    );
+
+    let quiet = etus(&dir, &hub.url, &["tasks", "list-tasks", "--view", "inbox", "-q"]);
+    assert_eq!(quiet.status.code(), Some(0));
+    assert_eq!(stdout(&quiet), "");
+
+    let profiled = etus(
+        &dir,
+        &hub.url,
+        &["--perfil", "prf_9", "tasks", "list-tasks", "--view", "inbox"],
+    );
+    assert_eq!(profiled.status.code(), Some(0));
+    assert!(
+        hub.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.target == "/mcp?perfil=prf_9")
+    );
+
+    let completions = etus(&dir, &hub.url, &["completions", "zsh"]);
+    assert_eq!(completions.status.code(), Some(0));
+    assert!(stdout(&completions).contains("create-task"));
+}
+
+#[test]
+fn rejected_session_asks_for_login() {
+    let hub = start(token_for("good"));
+    let dir = temp_dir("rejected");
+    login_as(&dir, &hub.url, &token_for("stale"));
+    let output = etus(&dir, &hub.url, &["apps"]);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("etus login"));
+}
