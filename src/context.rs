@@ -58,7 +58,7 @@ impl Ctx {
     }
 
     pub fn store(&self) -> Box<dyn SecretStore> {
-        store_for(&self.settings.paths, &self.settings.hub)
+        store_for(&self.settings.paths, &self.settings.hub, self.settings.token_store)
     }
 
     pub fn manager(&self) -> Result<TokenManager<HttpRefresher>> {

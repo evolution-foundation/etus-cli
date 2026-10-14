@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1 (2026-10-14)
+
+Token em arquivo e sem janelas do chaveiro.
+
+- No macOS e no Linux o token passa a ficar em arquivo 0600 na pasta de configuração, como no `gh`, no `gcloud` e no `aws`. O binário é assinado ad hoc, então cada versão tinha outra identidade e o macOS pedia de novo permissão para o item `etus-cli` do chaveiro; num agente sem terminal, essa janela travava o comando. O Windows continua no Gerenciador de Credenciais, que não abre janela.
+- Migração da 0.2.0: o primeiro comando rodado num terminal lê o token do chaveiro uma vez, grava no arquivo e apaga o item. Sem terminal, ou se a leitura falhar, o etus pede `etus login` (código 3) em vez de esperar.
+- O chaveiro vira opção: `etus config armazenamento chaveiro|arquivo` (move o token) ou `ETUS_TOKEN_STORE=keychain|file`. Com o chaveiro escolhido no macOS e sem terminal (stdin ou stdout), o comando sai na hora com código 3.
+- `etus token`: imprime um access token válido para scripts (`MCP_TOKEN=$(etus token)`; `--json` traz `expiresAt`). Recusa quando a saída é um terminal, a não ser com `--force`.
+- `etus config` mostra `tokenStore` (arquivo ou chaveiro) e `tokenLocation`.
+
 ## 0.2.0 (2026-10-14)
 
 Nomes em pt-BR primeiro.

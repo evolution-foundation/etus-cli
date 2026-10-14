@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::auth::store::{StoreKind, select_kind};
 use crate::error::{Error, Result};
 
 pub const DEFAULT_HUB: &str = "https://apps.etus.io";
@@ -19,6 +20,8 @@ pub struct ConfigFile {
     pub perfil: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_ttl_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_store: Option<StoreKind>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub clients: BTreeMap<String, String>,
 }
@@ -59,6 +62,11 @@ impl Paths {
 
     pub fn lock_file(&self, hub: &str) -> PathBuf {
         self.config_dir.join(format!("auth-{}.lock", short_hash(&[hub])))
+    }
+
+    pub fn keychain_marker(&self, hub: &str) -> PathBuf {
+        self.config_dir
+            .join(format!("keychain-migrated-{}", short_hash(&[hub])))
     }
 
     pub fn tokens_file(&self, hub: &str) -> PathBuf {
@@ -143,6 +151,8 @@ pub struct Settings {
     pub hub: String,
     pub perfil: Option<String>,
     pub cache_ttl: Duration,
+    pub token_store: StoreKind,
+    pub token_store_from_env: bool,
     pub paths: Paths,
     pub file: ConfigFile,
 }
@@ -160,7 +170,10 @@ impl Settings {
             .map(str::to_string)
             .or_else(|| file.perfil.clone())
             .filter(|p| !p.trim().is_empty());
+        let env_store = std::env::var("ETUS_TOKEN_STORE").ok().filter(|v| !v.trim().is_empty());
         Ok(Settings {
+            token_store: select_kind(env_store.as_deref(), file.token_store)?,
+            token_store_from_env: env_store.is_some(),
             hub: normalize_hub(&hub)?,
             perfil,
             cache_ttl: Duration::from_secs(file.cache_ttl_secs.unwrap_or(DEFAULT_CACHE_TTL_SECS)),
@@ -201,6 +214,8 @@ mod tests {
             hub: "https://apps.etus.io".into(),
             perfil: Some("prf 1".into()),
             cache_ttl: Duration::from_secs(1),
+            token_store: StoreKind::File,
+            token_store_from_env: false,
             paths: Paths::at(Path::new("/tmp/x")),
             file: ConfigFile::default(),
         };

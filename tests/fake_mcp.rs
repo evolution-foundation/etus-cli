@@ -174,15 +174,22 @@ fn login_as(dir: &Path, hub: &str, access_token: &str) {
 }
 
 fn etus(dir: &Path, hub: &str, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_etus"))
+    etus_with_store(dir, hub, args, Some("file"))
+}
+
+fn etus_with_store(dir: &Path, hub: &str, args: &[&str], store: Option<&str>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_etus"));
+    command
         .args(args)
         .env("ETUS_CONFIG_DIR", dir)
-        .env("ETUS_TOKEN_STORE", "file")
         .env("ETUS_HUB_URL", hub)
         .env("NO_PROXY", "127.0.0.1")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap()
+        .env_remove("ETUS_TOKEN_STORE")
+        .stdin(Stdio::null());
+    if let Some(store) = store {
+        command.env("ETUS_TOKEN_STORE", store);
+    }
+    command.output().unwrap()
 }
 
 fn stdout(output: &Output) -> String {
@@ -403,4 +410,85 @@ fn rejected_session_asks_for_login() {
     let output = etus(&dir, &hub.url, &["apps"]);
     assert_eq!(output.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&output.stderr).contains("etus login"));
+}
+
+#[test]
+fn token_command_prints_a_valid_token_for_scripts() {
+    let token = token_for("u1");
+    let hub = start(token.clone());
+    let dir = temp_dir("token");
+
+    let anonymous = etus_with_store(&dir, &hub.url, &["token"], None);
+    assert_eq!(anonymous.status.code(), Some(3));
+    assert_eq!(stdout(&anonymous), "");
+
+    login_as(&dir, &hub.url, &token);
+    let plain = etus_with_store(&dir, &hub.url, &["token"], None);
+    assert_eq!(
+        plain.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    assert_eq!(stdout(&plain), token);
+    assert!(!String::from_utf8_lossy(&plain.stderr).contains(&token));
+
+    let json = etus_with_store(&dir, &hub.url, &["token", "--json"], None);
+    let value: Value = serde_json::from_str(&stdout(&json)).unwrap();
+    assert_eq!(value["accessToken"], token.as_str());
+    assert!(value["expiresAt"].as_u64().unwrap() > etus::catalog::now_secs());
+
+    let help = etus_with_store(&dir, &hub.url, &["token", "--help"], None);
+    let help = stdout(&help);
+    assert!(
+        help.contains("segredo") && help.contains("MCP_TOKEN=$(etus token)"),
+        "{help}"
+    );
+}
+
+#[test]
+fn config_chooses_where_the_token_lives() {
+    let token = token_for("u1");
+    let hub = start(token.clone());
+    let dir = temp_dir("store-config");
+    login_as(&dir, &hub.url, &token);
+
+    let shown = etus_with_store(&dir, &hub.url, &["config", "--json"], None);
+    let value: Value = serde_json::from_str(&stdout(&shown)).unwrap();
+    if cfg!(not(target_os = "windows")) {
+        assert_eq!(value["tokenStore"], "arquivo");
+        assert!(value["tokenLocation"].as_str().unwrap().starts_with("arquivo "));
+    }
+
+    let chosen = etus_with_store(&dir, &hub.url, &["config", "armazenamento", "arquivo", "--json"], None);
+    assert_eq!(
+        chosen.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&chosen.stderr)
+    );
+    let config: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["token_store"], "file");
+
+    let overridden = etus_with_store(&dir, &hub.url, &["config", "armazenamento", "chaveiro"], Some("file"));
+    assert_eq!(overridden.status.code(), Some(2));
+
+    let invalid = etus_with_store(&dir, &hub.url, &["apps"], Some("cofre"));
+    assert_eq!(invalid.status.code(), Some(2));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn keychain_store_fails_fast_without_a_terminal() {
+    let token = token_for("u1");
+    let hub = start(token.clone());
+    let dir = temp_dir("failfast");
+    login_as(&dir, &hub.url, &token);
+    for args in [&["apps"][..], &["token"][..], &["logout"][..]] {
+        let output = etus_with_store(&dir, &hub.url, args, Some("keychain"));
+        assert_eq!(output.status.code(), Some(3), "{args:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("chaveiro"));
+        assert_eq!(stdout(&output), "");
+    }
+    assert!(Paths::at(&dir).tokens_file(&hub.url).exists());
 }

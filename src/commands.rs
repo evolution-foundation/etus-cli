@@ -5,8 +5,9 @@ use clap::ArgMatches;
 use serde_json::{Map, Value, json};
 
 use crate::auth::oauth::{self, AuthorizationRequest};
+use crate::auth::store::{StoreKind, keychain_supported, store_for};
 use crate::catalog::{App, Tool, find_app};
-use crate::cli::{self, Commands, EmpresaCmd, PerfilCmd, SkillsCmd};
+use crate::cli::{self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, SkillsCmd};
 use crate::config;
 use crate::confirm::{self, Decision};
 use crate::context::{Ctx, SET_COMPANY_TOOL};
@@ -45,7 +46,11 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
         }
         Commands::Completions { shell } => completions(ctx, shell),
         Commands::AtualizarCli { verificar } => crate::update::run(ctx, verificar),
-        Commands::Config => show_config(ctx),
+        Commands::Config { acao } => match acao.unwrap_or(ConfigCmd::Mostrar) {
+            ConfigCmd::Mostrar => show_config(ctx),
+            ConfigCmd::Armazenamento { onde } => choose_store(ctx, onde),
+        },
+        Commands::Token { force } => print_token(ctx, force),
         Commands::External(args) => external(ctx, args),
     }
 }
@@ -381,10 +386,76 @@ fn show_config(ctx: &Ctx) -> Result<()> {
         "cacheTtlSecs": s.cache_ttl.as_secs(),
         "configFile": s.paths.config_file(),
         "cacheDir": s.paths.cache_dir,
-        "tokenStore": ctx.store().describe(),
+        "tokenStore": s.token_store.label(),
+        "tokenLocation": ctx.store().describe(),
         "version": env!("CARGO_PKG_VERSION"),
     });
     ctx.out.print_value(&value);
+    Ok(())
+}
+
+fn choose_store(ctx: &Ctx, kind: StoreKind) -> Result<()> {
+    let s = &ctx.settings;
+    if s.token_store_from_env {
+        return Err(Error::Usage(
+            "ETUS_TOKEN_STORE está definida e vale mais que a configuração. Remova a variável e rode de novo.".into(),
+        ));
+    }
+    if kind == StoreKind::Keychain && !keychain_supported() {
+        return Err(Error::Usage(
+            "Esta plataforma não tem chaveiro suportado; o token fica em arquivo.".into(),
+        ));
+    }
+    let tokens = if kind == s.token_store {
+        None
+    } else {
+        ctx.store().load()?
+    };
+    let next = store_for(&s.paths, &s.hub, kind);
+    if let Some(tokens) = tokens {
+        if kind == StoreKind::File {
+            match std::fs::remove_file(s.paths.keychain_marker(&s.hub)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
+        next.save(&tokens)?;
+    }
+    let mut file = config::load(&s.paths)?;
+    file.token_store = Some(kind);
+    config::save(&s.paths, &file)?;
+    let location = next.describe();
+    ctx.out.print_human(
+        &format!("O token fica em: {location}"),
+        || json!({"tokenStore": kind.label(), "tokenLocation": location}),
+    );
+    Ok(())
+}
+
+pub fn token_output_allowed(stdout_is_terminal: bool, force: bool) -> Result<()> {
+    if stdout_is_terminal && !force {
+        return Err(Error::Usage(
+            "O token é um segredo e a saída é um terminal. Use num script (MCP_TOKEN=$(etus token)) ou passe --force."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn print_token(ctx: &Ctx, force: bool) -> Result<()> {
+    token_output_allowed(std::io::stdout().is_terminal(), force)?;
+    let manager = ctx.manager()?;
+    let token = manager.access_token(None)?;
+    if ctx.out.json {
+        let expires_at = manager
+            .current()
+            .ok()
+            .filter(|t| t.access_token == token)
+            .map(|t| t.expires_at);
+        println!("{}", json!({"accessToken": token, "expiresAt": expires_at}));
+    } else {
+        println!("{token}");
+    }
     Ok(())
 }
 
@@ -534,6 +605,15 @@ fn execute(ctx: &Ctx, tool: &Tool, args: Map<String, Value>, out: Output, yes: b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_is_refused_on_a_terminal_unless_forced() {
+        let refused = token_output_allowed(true, false).unwrap_err();
+        assert_eq!(refused.exit_code(), 2);
+        assert!(refused.message().contains("--force"));
+        assert!(token_output_allowed(true, true).is_ok());
+        assert!(token_output_allowed(false, false).is_ok());
+    }
 
     #[test]
     fn companies_resolve_by_id_slug_or_name() {
