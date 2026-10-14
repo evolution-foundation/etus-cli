@@ -11,6 +11,7 @@ use crate::config;
 use crate::confirm::{self, Decision};
 use crate::context::{Ctx, SET_COMPANY_TOOL};
 use crate::error::{EXIT_USAGE, Error, Result};
+use crate::naming::slug;
 use crate::output::{Output, pretty};
 use crate::schema;
 
@@ -185,10 +186,16 @@ fn whoami(ctx: &Ctx) -> Result<()> {
 
 fn app_summary(app: &App) -> Value {
     json!({
-        "app": app.prefix,
+        "app": app.word,
         "name": app.name,
         "aliases": app.aliases,
-        "commands": app.tools.iter().map(Tool::command_name).collect::<Vec<_>>(),
+        "prefix": app.prefix,
+        "commands": app.commands.iter().map(|c| json!({
+            "name": c.name,
+            "aliases": c.aliases,
+            "tool": c.tool.name,
+            "writes": c.tool.writes(),
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -205,26 +212,27 @@ fn apps(ctx: &Ctx) -> Result<()> {
             .print_human("Nenhum app liberado para você na empresa ativa.", || json!([]));
         return Ok(());
     }
-    let width = apps.iter().map(|a| a.prefix.len()).max().unwrap_or(0);
+    let width = apps.iter().map(|a| a.word.chars().count()).max().unwrap_or(0);
     let mut lines = Vec::new();
     if let Some(company) = &cache.company {
         lines.push(format!("Empresa ativa: {} ({})\n", company.name, company.id));
     }
     for app in &apps {
-        let writes = app.tools.iter().filter(|t| t.writes()).count();
-        let aliases = if app.aliases.is_empty() {
-            String::new()
-        } else {
-            format!(" [{}]", app.aliases.join(", "))
-        };
-        lines.push(format!(
-            "{:width$}  {}{}: {} comandos ({} alteram dados)",
-            app.prefix,
+        let writes = app.tools().filter(|t| t.writes()).count();
+        let mut line = format!(
+            "{:width$}  {}: {} ({} {})",
+            app.word,
             app.name,
-            aliases,
-            app.tools.len(),
-            writes
-        ));
+            cli::count(app.commands.len(), "comando", "comandos"),
+            writes,
+            if writes == 1 { "altera dados" } else { "alteram dados" }
+        );
+        let aliases = cli::app_line_aliases(app);
+        if !aliases.is_empty() {
+            line.push_str("; ");
+            line.push_str(&aliases);
+        }
+        lines.push(line);
     }
     lines.push("\nUse `etus <app> --help` para ver os comandos de um app.".into());
     ctx.out.print_human(&lines.join("\n"), || Value::Null);
@@ -413,9 +421,21 @@ fn external(ctx: &Ctx, args: Vec<String>) -> Result<()> {
             "App ou comando desconhecido: {word}{hint}. Veja `etus apps` e `etus --help`."
         )));
     };
-    let mut argv = vec![app.prefix.clone()];
+    let mut rest = rest.to_vec();
+    if let Some(first) = rest.first_mut()
+        && !first.starts_with('-')
+        && app.find_command(first).is_none()
+        && let Some(found) = app.find_command(&slug(first))
+    {
+        *first = found.name.clone();
+    }
+    let invocation = cli::Invocation {
+        app: word,
+        command: rest.first().map(String::as_str),
+    };
+    let mut argv = vec![word.clone()];
     argv.extend(rest.iter().cloned());
-    let matches = match cli::app_command(app).try_get_matches_from(argv) {
+    let matches = match cli::app_command(app, &invocation).try_get_matches_from(argv) {
         Ok(m) => m,
         Err(e) => {
             let _ = e.print();
@@ -423,14 +443,11 @@ fn external(ctx: &Ctx, args: Vec<String>) -> Result<()> {
         }
     };
     let Some((name, sub)) = matches.subcommand() else {
-        return Err(Error::Usage(format!(
-            "Falta o comando. Veja `etus {} --help`.",
-            app.prefix
-        )));
+        return Err(Error::Usage(format!("Falta o comando. Veja `etus {word} --help`.")));
     };
     let tool = app
         .find_command(name)
-        .cloned()
+        .map(|c| c.tool.clone())
         .ok_or_else(|| Error::Usage(format!("Comando desconhecido: {name}.")))?;
     run_tool(ctx, &tool, sub)
 }

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 (2026-10-14)
+
+Nomes em pt-BR primeiro.
+
+- Cada app tem um nome canônico em pt-BR, tirado do nome do app: `tarefas`, `reunioes`, `mural`, `design`, `work`, `extensoes`, `rotinas`, `hub`. O prefixo MCP (`tasks`, `records`, `muraldereconheci`...), os nomes em inglês e o nome completo do app (`mural-de-reconhecimento`, `etus-design`) continuam aceitos como aliases. Também aceita o nome com acento ou maiúscula (`etus Reuniões`).
+- Cada comando tem como nome canônico o título da ferramenta em pt-BR (`criar-tarefa`, `listar-tarefas`) quando o título é em pt-BR; senão, o nome da ferramenta em kebab-case. A outra forma (`create-task`, e também `create_task`) é sempre aceita. Os nomes são únicos dentro do app e não mudam com a ordem do catálogo.
+- A ajuda mostra o nome que você digitou (`Uso: etus tarefas <COMANDO>` ou `Uso: etus tasks <COMANDO>`), as outras formas aceitas em `etus <app> <comando> --help` e a descrição completa ali; na lista de comandos a descrição é cortada no fim de uma palavra, com reticências.
+- `etus apps` lista o nome canônico primeiro e os aliases depois; `etus apps --json` traz `app` (nome canônico), `prefix`, `aliases` e, por comando, `name`, `aliases`, `tool` e `writes`.
+
 ## 0.1.0 (2026-10-14)
 
 Primeira versão.

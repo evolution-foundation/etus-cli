@@ -44,18 +44,32 @@ O token fica no chaveiro do sistema (macOS e Windows) ou em um arquivo com permi
 ## Usar
 
 ```sh
-etus tarefas --help                                  # comandos do app (alias de tasks)
-etus tasks list-tasks --help                         # descrição e parâmetros
-etus tasks list-tasks --view today --today 2026-10-14
-etus tasks create-task --title "Revisar contrato" --due-date 2026-10-20 --yes
-etus reunioes search-meetings --q "preço" --json
+etus tarefas --help                                  # comandos do app
+etus tarefas listar-tarefas --help                   # descrição completa e parâmetros
+etus tarefas listar-tarefas --view today --today 2026-10-14
+etus tarefas criar-tarefa --title "Revisar contrato" --due-date 2026-10-20 --yes
+etus reunioes buscar-reunioes --q "preço" --json
+etus mural --help
 etus empresa listar
 etus empresa usar etus                               # id, slug ou nome
 etus skills buscar "planilha de custos"
 etus skills ler <id>
 ```
 
-Nomes: a ferramenta `tasks__create_task` vira `etus tasks create-task`; o título em pt-BR ("Criar tarefa") vira o alias `criar-tarefa`. Apps têm aliases pelo nome (`tarefas`, `reunioes`, `rotinas`, `extensoes`...).
+Nomes, pt-BR primeiro:
+
+| App | Nome | Também aceita |
+|---|---|---|
+| Tarefas | `tarefas` | `tasks` |
+| Reuniões | `reunioes` | `records`, `meetings`, `gravador` |
+| Mural de Reconhecimento | `mural` | `muraldereconheci`, `mural-de-reconhecimento` |
+| Etus Design | `design` | `etus-design` |
+| Etus Work | `work` | `etus-work` |
+| Extensões de IA | `extensoes` | `extensions`, `ext` |
+| Rotinas | `rotinas` | `routines` |
+| ETUS Platforms | `hub` | `plataforma`, `platforms` |
+
+Um app novo ganha o nome do próprio app no hub, sem acento e até o primeiro "de" (`Agenda de Salas` vira `agenda`); o prefixo MCP vira alias. Os comandos seguem o título da ferramenta quando ele é em pt-BR (`Criar tarefa` vira `criar-tarefa`); senão, o nome da ferramenta (`tasks__create_task` vira `create-task`). A outra forma sempre funciona: `etus tasks create-task` e `etus tarefas criar-tarefa` chamam a mesma ferramenta. `etus apps` mostra os nomes e os aliases, e `etus <app> <comando> --help` mostra as outras formas aceitas.
 
 Argumentos:
 - flags geradas do JSON Schema: `--project-id x`, números, `--done` ou `--done false`, listas repetindo a flag (`--tag a --tag b`) ou em JSON (`--tag '["a","b"]'`), objetos em JSON, `null` para apagar campos que aceitam nulo;

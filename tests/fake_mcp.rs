@@ -244,16 +244,43 @@ fn cli_end_to_end_against_fake_gateway() {
     let apps = etus(&dir, &hub.url, &["apps", "--json"]);
     assert_eq!(apps.status.code(), Some(0), "{}", String::from_utf8_lossy(&apps.stderr));
     let listed: Value = serde_json::from_str(&stdout(&apps)).unwrap();
-    let tasks = listed.as_array().unwrap().iter().find(|a| a["app"] == "tasks").unwrap();
+    let tasks = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["app"] == "tarefas")
+        .unwrap();
     assert_eq!(tasks["name"], "Tarefas");
-    assert!(tasks["aliases"].as_array().unwrap().contains(&json!("tarefas")));
+    assert_eq!(tasks["prefix"], "tasks");
+    assert!(tasks["aliases"].as_array().unwrap().contains(&json!("tasks")));
+    let create = tasks["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["tool"] == "tasks__create_task")
+        .unwrap();
+    assert_eq!(create["name"], "criar-tarefa");
+    assert_eq!(create["aliases"], json!(["create-task"]));
+
+    let human = stdout(&etus(&dir, &hub.url, &["apps"]));
+    let line = human.lines().find(|l| l.starts_with("tarefas")).unwrap();
+    assert!(line.contains("Tarefas") && line.ends_with("também: tasks"), "{line}");
 
     let help = etus(&dir, &hub.url, &["--help"]);
-    assert!(stdout(&help).contains("tasks"));
+    assert!(stdout(&help).contains("tarefas"));
 
     let app_help = etus(&dir, &hub.url, &["tarefas", "--help"]);
     assert_eq!(app_help.status.code(), Some(0));
-    assert!(stdout(&app_help).contains("list-tasks") && stdout(&app_help).contains("create-task"));
+    let app_help = stdout(&app_help);
+    assert!(app_help.contains("Uso: etus tarefas <COMANDO>"), "{app_help}");
+    assert!(app_help.contains("listar-tarefas") && app_help.contains("criar-tarefa"));
+
+    let english_help = stdout(&etus(&dir, &hub.url, &["tasks", "--help"]));
+    assert!(english_help.contains("Uso: etus tasks <COMANDO>"), "{english_help}");
+
+    let tool_help = stdout(&etus(&dir, &hub.url, &["tarefas", "criar-tarefa", "--help"]));
+    assert!(tool_help.contains("Uso: etus tarefas criar-tarefa"), "{tool_help}");
+    assert!(tool_help.contains("Creates a task as the person."));
 
     let list = etus(
         &dir,
@@ -266,15 +293,18 @@ fn cli_end_to_end_against_fake_gateway() {
         json!({"view": "inbox", "limit": 3})
     );
 
-    let alias = etus(
-        &dir,
-        &hub.url,
-        &["tasks", "listar-tarefas", "--json", r#"{"view":"today"}"#],
-    );
-    assert_eq!(
-        serde_json::from_str::<Value>(&stdout(&alias)).unwrap(),
-        json!({"view": "today"})
-    );
+    for (app, command) in [
+        ("tasks", "listar-tarefas"),
+        ("Tarefas", "list_tasks"),
+        ("tarefas", "list-tasks"),
+    ] {
+        let alias = etus(&dir, &hub.url, &[app, command, "--json", r#"{"view":"today"}"#]);
+        assert_eq!(
+            serde_json::from_str::<Value>(&stdout(&alias)).unwrap(),
+            json!({"view": "today"}),
+            "{app} {command}"
+        );
+    }
 
     let missing = etus(&dir, &hub.url, &["tasks", "list-tasks"]);
     assert_eq!(missing.status.code(), Some(2));
@@ -362,7 +392,7 @@ fn cli_end_to_end_against_fake_gateway() {
 
     let completions = etus(&dir, &hub.url, &["completions", "zsh"]);
     assert_eq!(completions.status.code(), Some(0));
-    assert!(stdout(&completions).contains("create-task"));
+    assert!(stdout(&completions).contains("criar-tarefa"));
 }
 
 #[test]
