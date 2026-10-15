@@ -112,8 +112,45 @@ pub enum Commands {
         #[arg(long, help = "Imprime mesmo quando a saída é um terminal")]
         force: bool,
     },
+    #[command(
+        about = "Marca o item do Plane em que você está trabalhando (etiqueta x-etus-work)",
+        long_about = "Marca o item do Plane em que você está trabalhando, para o uso de IA ser medido por empresa, projeto e item.\n\nO estado fica no repositório atual (ou na pasta do Claude Code fora de um repositório) até você mudar. Os hooks do instalador do roteador leem esse estado e mandam o header x-etus-work em toda chamada do Claude Code.\n\nSem argumentos, mostra o estado. Só com --fase, --projeto ou --empresa, altera o trabalho já marcado.",
+        args_conflicts_with_subcommands = true
+    )]
+    Trabalho {
+        #[arg(value_name = "ITEM", help = "Chave do item no Plane, por exemplo ENG-123")]
+        item: Option<String>,
+        #[arg(long, value_name = "FASE", help = "plan, impl, review ou qa")]
+        fase: Option<String>,
+        #[arg(
+            long,
+            value_name = "PROJETO",
+            help = "Projeto da Etus: hub:<id>, chat:<id> ou rotina:<id>"
+        )]
+        projeto: Option<String>,
+        #[arg(
+            long,
+            value_name = "EMPRESA",
+            help = "Id da empresa no hub (padrão: a empresa ativa do etus)"
+        )]
+        empresa: Option<String>,
+        #[arg(long, value_name = "ETIQUETA", help = "Etiqueta livre, para trabalho fora do Plane")]
+        etiqueta: Option<String>,
+        #[command(subcommand)]
+        acao: Option<TrabalhoCmd>,
+    },
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TrabalhoCmd {
+    #[command(about = "Mostra o trabalho marcado e o header que vai sair")]
+    Mostrar,
+    #[command(about = "Imprime só a linha x-etus-work, para hooks e scripts")]
+    Cabecalho,
+    #[command(about = "Apaga o trabalho marcado (volta ao que o branch disser)")]
+    Limpar,
 }
 
 #[derive(Debug, Subcommand)]
@@ -436,6 +473,50 @@ mod tests {
         ]))
         .unwrap();
         group(&tools)
+    }
+
+    #[test]
+    fn trabalho_parses_item_flags_and_subcommands() {
+        let cli = |args: &[&str]| {
+            let m = root_command(None).try_get_matches_from(args).unwrap();
+            <Cli as clap::FromArgMatches>::from_arg_matches(&m).unwrap().command
+        };
+        match cli(&["etus", "trabalho", "ENG-123", "--fase", "qa", "--projeto", "hub:p1"]) {
+            Some(Commands::Trabalho {
+                item,
+                fase,
+                projeto,
+                acao: None,
+                ..
+            }) => assert_eq!(
+                (item.as_deref(), fase.as_deref(), projeto.as_deref()),
+                (Some("ENG-123"), Some("qa"), Some("hub:p1"))
+            ),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(
+            cli(&["etus", "trabalho", "mostrar"]),
+            Some(Commands::Trabalho {
+                item: None,
+                acao: Some(TrabalhoCmd::Mostrar),
+                ..
+            })
+        ));
+        assert!(matches!(
+            cli(&["etus", "trabalho", "limpar"]),
+            Some(Commands::Trabalho {
+                acao: Some(TrabalhoCmd::Limpar),
+                ..
+            })
+        ));
+        assert!(matches!(
+            cli(&["etus", "trabalho", "--fase", "qa", "limpar"]),
+            Some(Commands::Trabalho {
+                item: Some(_),
+                acao: None,
+                ..
+            })
+        ));
     }
 
     #[test]

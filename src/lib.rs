@@ -11,6 +11,7 @@ pub mod naming;
 pub mod output;
 pub mod schema;
 pub mod update;
+pub mod work;
 
 #[cfg(test)]
 pub mod testutil;
