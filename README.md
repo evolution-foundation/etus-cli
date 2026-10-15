@@ -111,6 +111,7 @@ Ferramentas que alteram dados pedem confirmação no terminal ou `--yes` (sem te
 ## Para agentes
 
 ```sh
+etus skills sincronizar         # uma skill por app que você usa, na pasta do agente (veja abaixo)
 etus --help                     # apps disponíveis (do cache)
 etus <app> --help               # comandos do app, os que alteram marcados com [altera]
 etus <app> <comando> --help     # parâmetros, exemplo e se pede --yes
@@ -164,6 +165,29 @@ etus config abrir-links sim            # abre sozinho quando há terminal (nao p
 - `--open` abre sempre, com ou sem terminal. Sem a flag, o link só abre sozinho com `etus config abrir-links sim` (`open_actions` no arquivo) ou `ETUS_OPEN_ACTIONS=1`, e ainda assim só quando stdin e stderr são um terminal; agentes rodando sem terminal nunca abrem o navegador sem `--open`.
 - `--wait[=SEGUNDOS]` (também `--aguardar`) repete a mesma chamada, com os mesmos argumentos e a mesma confirmação, a primeira vez depois de 2 s e depois a cada 5 s, até a resposta não ser mais `action_required` ou o tempo acabar (padrão 300 s, no máximo 1800). Concluiu: imprime o resultado final e sai com o código dele. O tempo acabou: imprime o último resultado e sai com 5. Num agente, só use `--wait` quando a pessoa estiver por perto para clicar.
 - As flags valem antes do app (`etus --open tarefas ...`) ou depois do comando. Por isso `open`, `abrir`, `wait` e `aguardar` passam a ser nomes reservados: um parâmetro de ferramenta com esse nome vira `--arg-open`, como já acontecia com `json` e `yes`.
+
+## Skills dos seus apps para os agentes
+
+`etus skills sincronizar` (também `etus skills sync`) gera uma skill por app que você pode usar na empresa ativa, para o agente saber de cara o que cada app faz e quais comandos chamar, sem redescobrir com `--help` a cada conversa. A regra geral do `etus` (login, empresa, JSON, códigos de saída, confirmação) fica na skill escrita à mão `etus-cli`, do pacote `etus-core` do etus-skills.
+
+```sh
+etus login
+etus skills sincronizar                      # Claude Code: ~/.claude/skills/etus-<app>/SKILL.md
+etus skills sincronizar --agente codex       # Codex: ~/.agents/skills/etus-<app>/SKILL.md
+etus skills sincronizar --agente todos       # os dois
+etus skills sincronizar --projeto            # pastas do repositório: .claude/skills e .agents/skills
+etus skills sincronizar --pasta ./skills     # uma pasta qualquer (vale mais que --agente e --projeto)
+etus skills sincronizar --dry-run            # mostra o que mudaria, sem gravar
+etus skills sincronizar --json               # {"pastas","criadas","atualizadas","removidas","iguais","ignoradas"}
+```
+
+- **Do seu catálogo, na hora.** Renova o catálogo como `etus atualizar`, então respeita a empresa ativa, o `--perfil` e o login só leitura: só entram os apps e comandos liberados para você.
+- **O que cada skill traz.** Para que o app serve, como chamar, cada comando com aliases, resumo, se lê, altera ou é destrutivo, a permissão exigida e os parâmetros (obrigatórios com o tipo; opcionais pelo nome), as receitas e os cuidados que o app declara no manifesto (bloco `guide`) e as regras de confirmação e de ação necessária. App com mais de 60 comandos lista só os obrigatórios.
+- **Guia do app.** Vem de `etus_detalhar` com `app:<prefixo>`, no hub. Num hub que ainda não serve o guia, a skill sai só das ferramentas, sem receitas nem permissões, e o etus avisa no stderr.
+- **Nome e dono.** A pasta é `etus-<app>`, com o mesmo nome de `etus apps`. `etus-cli` é reservado para a skill geral: nunca é gravada nem apagada aqui. Toda skill gerada tem a linha `<!-- gerado por etus skills sincronizar: não edite, rode o comando de novo -->` logo depois do frontmatter.
+- **Só mexe no que gerou.** Atualiza só o que mudou e remove só as pastas `etus-*` com essa linha cujo app saiu da sua lista (perdeu acesso, app removido, outra empresa). Um `SKILL.md` com o mesmo nome feito à mão fica como está e aparece como ignorado. Pastas que são links simbólicos não são seguidas.
+- **Idempotente.** Sem data no conteúdo: rodar de novo sem mudança no hub não grava nada.
+- Rode de novo depois de `etus empresa usar`, de ganhar ou perder acesso a um app, ou quando um app publicar versão nova. Depois de gravar, abra uma conversa nova no agente para ele carregar as skills.
 
 ## Etiqueta de trabalho
 

@@ -1,4 +1,6 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{IsTerminal, Read};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::ArgMatches;
@@ -16,6 +18,7 @@ use crate::error::{EXIT_USAGE, Error, Result};
 use crate::naming::slug;
 use crate::output::{Output, pretty};
 use crate::schema;
+use crate::skills;
 use crate::work;
 
 const SKILLS_SEARCH_TOOL: &str = "extensoes__catalogo_buscar";
@@ -371,7 +374,6 @@ pub fn pick_param(tool: &Tool, preferred: &[&str]) -> Option<String> {
 }
 
 fn skills(ctx: &Ctx, action: SkillsCmd) -> Result<()> {
-    let (cache, _) = ctx.catalog()?;
     let (tool_name, preferred, value): (&str, &[&str], String) = match action {
         SkillsCmd::Buscar { termo } => (
             SKILLS_SEARCH_TOOL,
@@ -379,7 +381,11 @@ fn skills(ctx: &Ctx, action: SkillsCmd) -> Result<()> {
             termo.join(" "),
         ),
         SkillsCmd::Ler { id } => (SKILLS_READ_TOOL, &["id", "skillId", "slug", "key", "chave"], id),
+        SkillsCmd::Sincronizar { agente, projeto, pasta } => {
+            return sync_skills(ctx, agente, projeto, pasta.as_deref());
+        }
     };
+    let (cache, _) = ctx.catalog()?;
     let tool = cache.find_tool(tool_name).cloned().ok_or_else(|| {
         Error::Permission(format!("O catálogo do Extensões ({tool_name}) não está liberado para você. Rode `etus atualizar` ou peça acesso no hub."))
     })?;
@@ -388,6 +394,114 @@ fn skills(ctx: &Ctx, action: SkillsCmd) -> Result<()> {
     let mut args = Map::new();
     args.insert(param, Value::String(value));
     execute(ctx, &tool, args, ctx.out, RunFlags::from_ctx(ctx))
+}
+
+fn fetch_details(ctx: &Ctx, apps: &[App]) -> BTreeMap<String, skills::AppDetail> {
+    let names = skills::detail_names(apps);
+    let mut details = BTreeMap::new();
+    let _ = ctx.with_mcp(|mcp| {
+        for chunk in names.chunks(skills::DETAIL_BATCH) {
+            let outcome = mcp.call_tool(skills::DETAIL_TOOL, &json!({ "nomes": chunk }))?;
+            if !outcome.is_error {
+                details.extend(skills::parse_details(&crate::output::payload(&outcome.result)));
+            }
+        }
+        Ok(())
+    });
+    details
+}
+
+fn skill_locations() -> Result<skills::Locations> {
+    let base = directories::BaseDirs::new()
+        .ok_or_else(|| Error::Other("Não foi possível achar a pasta do usuário.".into()))?;
+    let home = base.home_dir().to_path_buf();
+    let cwd = std::env::current_dir()?;
+    Ok(skills::Locations {
+        claude_home: work::claude_home().unwrap_or_else(|| home.join(".claude")),
+        project_root: work::git_context(&cwd).map(|git| git.top).unwrap_or(cwd),
+        home,
+    })
+}
+
+fn sync_skills(ctx: &Ctx, agent: skills::SkillAgent, project: bool, folder: Option<&Path>) -> Result<()> {
+    let cache = ctx.fetch_catalog()?;
+    let apps = cache.apps();
+    let details = fetch_details(ctx, &apps);
+    let origin = skills::Origin {
+        company: cache.company.as_ref().map(|c| c.name.clone()),
+        hub_host: skills::hub_host(&ctx.settings.hub),
+    };
+    let wanted = skills::desired(&apps, &details, &origin);
+    let dirs = skills::target_dirs(agent, project, folder, &skill_locations()?);
+    let mut reports = Vec::new();
+    for dir in dirs {
+        let plan = skills::plan(&dir, &wanted);
+        if !ctx.dry_run {
+            skills::apply(&dir, &wanted, &plan)?;
+        }
+        reports.push((dir, plan));
+    }
+    let without_guide = apps
+        .iter()
+        .filter(|a| a.prefix != crate::catalog::UNPREFIXED && !details.contains_key(&a.prefix))
+        .count();
+    if without_guide > 0 && !ctx.out.json && !ctx.out.quiet {
+        eprintln!(
+            "etus: o hub não mandou o detalhe de {}; essas skills usam só as ferramentas (sem guia nem permissões).",
+            cli::count(without_guide, "app", "apps")
+        );
+    }
+    let text = sync_report_text(&reports, ctx.dry_run);
+    ctx.out.print_human(&text, || sync_report_json(&reports));
+    Ok(())
+}
+
+fn sync_report_text(reports: &[(PathBuf, skills::Plan)], dry_run: bool) -> String {
+    let mut lines = Vec::new();
+    for (dir, plan) in reports {
+        lines.push(format!("Pasta {}", dir.display()));
+        let groups: [(&Vec<String>, &str, &str); 4] = [
+            (&plan.create, "+", "criada"),
+            (&plan.update, "~", "atualizada"),
+            (&plan.remove, "-", "removida"),
+            (&plan.skipped, "!", "ignorada: SKILL.md que não foi gerado pelo etus"),
+        ];
+        for (names, mark, label) in groups {
+            lines.extend(names.iter().map(|name| format!("{mark} {name} ({label})")));
+        }
+        lines.push(format!(
+            "{} criadas, {} atualizadas, {} removidas, {} sem mudança.",
+            plan.create.len(),
+            plan.update.len(),
+            plan.remove.len(),
+            plan.unchanged.len()
+        ));
+    }
+    if dry_run {
+        lines.push("Simulação (--dry-run): nada foi gravado.".into());
+    } else if reports.iter().any(|(_, plan)| plan.changes() > 0) {
+        lines.push("Reinicie o agente (ou abra uma conversa nova) para ele carregar as skills.".into());
+    }
+    lines.join("\n")
+}
+
+fn sync_report_json(reports: &[(PathBuf, skills::Plan)]) -> Value {
+    let union = |pick: fn(&skills::Plan) -> &Vec<String>| -> Vec<String> {
+        reports
+            .iter()
+            .flat_map(|(_, plan)| pick(plan).iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    };
+    json!({
+        "pastas": reports.iter().map(|(dir, _)| dir.display().to_string()).collect::<Vec<_>>(),
+        "criadas": union(|p| &p.create),
+        "atualizadas": union(|p| &p.update),
+        "removidas": union(|p| &p.remove),
+        "iguais": union(|p| &p.unchanged),
+        "ignoradas": union(|p| &p.skipped),
+    })
 }
 
 fn completions(ctx: &Ctx, shell: clap_complete::Shell) -> Result<()> {
