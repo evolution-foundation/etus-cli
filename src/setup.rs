@@ -83,7 +83,7 @@ impl Target {
 pub fn parse_targets(inputs: Option<&[String]>) -> Result<Vec<Target>> {
     let inputs = match inputs {
         Some(list) if !list.is_empty() => list,
-        _ => return Ok(vec![Target::ClaudeCode]),
+        _ => return Ok(Target::all()),
     };
 
     let mut out = BTreeSet::new();
@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(all.len(), 6);
 
         let default_targets = parse_targets(None).unwrap();
-        assert_eq!(default_targets, vec![Target::ClaudeCode]);
+        assert_eq!(default_targets, Target::all());
     }
 
     #[test]
