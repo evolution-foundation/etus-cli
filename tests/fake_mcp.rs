@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
@@ -34,8 +35,17 @@ fn tools() -> Value {
         {"name": "tasks__list_tasks", "title": "Listar tarefas", "description": "Tarefas: Lists tasks of one view.", "inputSchema": {"type": "object", "properties": {"view": {"type": "string", "enum": ["inbox", "today"]}, "limit": {"type": "integer"}}, "required": ["view"]}, "annotations": {"readOnlyHint": true, "destructiveHint": false}},
         {"name": "tasks__create_task", "title": "Criar tarefa", "description": "Tarefas: Creates a task as the person.", "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "priority": {"anyOf": [{"const": 1, "type": "number"}, {"const": 4, "type": "number"}]}}, "required": ["title"]}, "annotations": {"readOnlyHint": false, "destructiveHint": false}},
         {"name": "tasks__broken", "title": "Quebrada", "description": "Tarefas: Always fails.", "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": true}},
-        {"name": "tasks__revoked", "title": "Revogada", "description": "Tarefas: Listed but no longer allowed.", "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": true}}
+        {"name": "tasks__revoked", "title": "Revogada", "description": "Tarefas: Listed but no longer allowed.", "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": true}},
+        {"name": "tasks__agenda", "title": "Ler agenda", "description": "Tarefas: Needs the Google connector.", "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": true}},
+        {"name": "tasks__consent_once", "title": "Autorizar uma vez", "description": "Tarefas: Needs consent on the first call.", "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": true}}
     ])
+}
+
+static CONSENT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+fn action_required(kind: &str, url: &str) -> Value {
+    let structured = json!({"status": "action_required", "action": {"kind": kind, "title": "Conectar o Google", "message": "Conecte sua conta Google para ler a agenda.", "url": url, "missing": ["google"]}});
+    json!({"content": [{"type": "text", "text": format!("Para continuar, abra {url}")}], "structuredContent": structured})
 }
 
 fn rpc_reply(body: &Value) -> (String, String) {
@@ -57,6 +67,17 @@ fn rpc_reply(body: &Value) -> (String, String) {
                 "tasks__create_task" => {
                     let message = json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": json!({"created": args}).to_string()}]}});
                     ("text/event-stream".into(), format!("event: message\ndata: {message}\n\n"))
+                }
+                "tasks__agenda" => (
+                    json_ct,
+                    ok(action_required("connect", "https://apps.etus.io/extensoes/conectores/google")),
+                ),
+                "tasks__consent_once" => {
+                    if CONSENT_CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+                        (json_ct, ok(action_required("consent", "https://apps.etus.io/oauth/consent?app=tasks")))
+                    } else {
+                        (json_ct, ok(json!({"structuredContent": {"ok": true}})))
+                    }
                 }
                 "tasks__broken" => (json_ct, ok(json!({"content": [{"type": "text", "text": "Task not found"}], "isError": true}))),
                 _ => (
@@ -221,7 +242,7 @@ fn client_lists_and_calls_tools() {
     let source = Static(token.clone());
     let client = McpClient::new(&http, format!("{}/mcp", hub.url), &source);
     let listed = client.list_tools().unwrap();
-    assert_eq!(listed.len(), 5);
+    assert_eq!(listed.len(), 7);
     let outcome = client
         .call_tool("tasks__list_tasks", &json!({"view": "today"}))
         .unwrap();
@@ -400,6 +421,59 @@ fn cli_end_to_end_against_fake_gateway() {
     let completions = etus(&dir, &hub.url, &["completions", "zsh"]);
     assert_eq!(completions.status.code(), Some(0));
     assert!(stdout(&completions).contains("criar-tarefa"));
+}
+
+#[test]
+fn action_required_prints_the_link_and_exits_with_code_5() {
+    let token = token_for("u1");
+    let hub = start(token.clone());
+    let dir = temp_dir("action");
+    login_as(&dir, &hub.url, &token);
+
+    let human = etus(&dir, &hub.url, &["tarefas", "agenda"]);
+    assert_eq!(human.status.code(), Some(5));
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(stderr.contains("Ação necessária: Conectar o Google"), "{stderr}");
+    assert!(
+        stderr.contains("Abra: https://apps.etus.io/extensoes/conectores/google"),
+        "{stderr}"
+    );
+    assert!(stdout(&human).contains("\"status\": \"action_required\""));
+
+    let agent = etus(&dir, &hub.url, &["tarefas", "agenda", "--json"]);
+    assert_eq!(agent.status.code(), Some(5));
+    let body: Value = serde_json::from_str(&stdout(&agent)).unwrap();
+    assert_eq!(body["status"], "action_required");
+    assert_eq!(
+        body["action"]["url"],
+        "https://apps.etus.io/extensoes/conectores/google"
+    );
+    let error: Value = serde_json::from_str(String::from_utf8_lossy(&agent.stderr).trim()).unwrap();
+    assert_eq!(error["error"]["kind"], "action_required");
+    assert_eq!(error["error"]["exitCode"], 5);
+    assert_eq!(error["error"]["action"]["kind"], "connect");
+}
+
+#[test]
+fn wait_repeats_the_call_after_the_person_acts() {
+    let token = token_for("u1");
+    let hub = start(token.clone());
+    let dir = temp_dir("action-wait");
+    login_as(&dir, &hub.url, &token);
+
+    let output = etus(&dir, &hub.url, &["tarefas", "consent-once", "--wait=20", "--json"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&output)).unwrap(),
+        json!({"ok": true})
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("https://apps.etus.io/oauth/consent?app=tasks"));
+    assert_eq!(calls(&hub, "tasks__consent_once"), 2);
 }
 
 #[test]

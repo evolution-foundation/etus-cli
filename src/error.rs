@@ -1,10 +1,13 @@
 use std::fmt;
 
+use crate::action::Action;
+
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_TOOL_ERROR: i32 = 1;
 pub const EXIT_USAGE: i32 = 2;
 pub const EXIT_AUTH_REQUIRED: i32 = 3;
 pub const EXIT_PERMISSION_DENIED: i32 = 4;
+pub const EXIT_ACTION_REQUIRED: i32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -14,6 +17,7 @@ pub enum Error {
     Tool(String),
     Network(String),
     Other(String),
+    ActionRequired(Box<Action>),
     Exit(i32),
 }
 
@@ -26,6 +30,7 @@ impl Error {
             Error::Auth(_) => EXIT_AUTH_REQUIRED,
             Error::Permission(_) => EXIT_PERMISSION_DENIED,
             Error::Tool(_) | Error::Network(_) | Error::Other(_) => EXIT_TOOL_ERROR,
+            Error::ActionRequired(_) => EXIT_ACTION_REQUIRED,
             Error::Exit(code) => *code,
         }
     }
@@ -38,6 +43,7 @@ impl Error {
             | Error::Tool(m)
             | Error::Network(m)
             | Error::Other(m) => m,
+            Error::ActionRequired(action) => &action.message,
             Error::Exit(_) => "",
         }
     }
@@ -49,6 +55,7 @@ impl Error {
             Error::Permission(_) => "permission_denied",
             Error::Tool(_) => "tool_error",
             Error::Network(_) => "network",
+            Error::ActionRequired(_) => "action_required",
             Error::Other(_) | Error::Exit(_) => "error",
         }
     }
@@ -105,5 +112,16 @@ mod tests {
         assert_eq!(Error::Other("x".into()).exit_code(), 1);
         assert_eq!(Error::not_logged_in().exit_code(), EXIT_AUTH_REQUIRED);
         assert_eq!(Error::Exit(0).exit_code(), EXIT_OK);
+        let action = Action {
+            kind: "consent".into(),
+            title: "t".into(),
+            message: "m".into(),
+            url: "https://apps.etus.io/x".into(),
+            missing: Vec::new(),
+            expires_at: None,
+        };
+        let required = Error::ActionRequired(Box::new(action));
+        assert_eq!(required.exit_code(), 5);
+        assert_eq!(required.kind(), "action_required");
     }
 }

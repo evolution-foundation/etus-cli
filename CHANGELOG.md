@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 (2026-10-14)
+
+Ação necessária com link para a tela certa.
+
+- Quando uma ferramenta responde `{"status": "action_required", "action": {...}}` (no `structuredContent` ou como JSON no texto), o etus mostra no stderr o título, a mensagem, o que falta e o link, mantém o resultado no stdout como sempre e sai com o código novo 5. Com `--json`, o erro no stderr traz também `action`.
+- `--open` (também `--abrir`) abre o link no navegador. `etus config abrir-links sim|nao` (`open_actions` no arquivo) ou `ETUS_OPEN_ACTIONS` abrem sozinho, só quando há terminal.
+- `--wait[=SEGUNDOS]` (também `--aguardar`) espera você concluir e repete a mesma chamada (2 s, depois a cada 5 s; padrão 300 s, no máximo 1800), como o `etus login` espera o navegador.
+- Só abre links `https` (ou `http` em localhost); o resto é ignorado e tratado como resposta comum.
+- `open`, `abrir`, `wait` e `aguardar` viram nomes reservados de flag: um parâmetro de ferramenta com esse nome passa a ser `--arg-<nome>`.
+- `etus config` mostra `openActions`.
+
 ## 0.3.0 (2026-10-14)
 
 Etiqueta de trabalho.

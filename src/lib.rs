@@ -1,3 +1,4 @@
+pub mod action;
 pub mod auth;
 pub mod catalog;
 pub mod cli;
@@ -73,7 +74,7 @@ pub fn run_args(argv: Vec<String>) -> i32 {
         let _ = root_command(Some(NO_CATALOG_HELP.to_string())).print_help();
         return error::EXIT_USAGE;
     };
-    let ctx = Ctx::new(settings, out, cli.yes, cli.dry_run);
+    let ctx = Ctx::new(settings, out, cli.yes, cli.dry_run).with_actions(cli.open, cli.wait);
     match commands::dispatch(&ctx, command) {
         Ok(()) => 0,
         Err(error) => {

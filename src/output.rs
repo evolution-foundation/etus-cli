@@ -2,6 +2,7 @@ use std::io::Write;
 
 use serde_json::{Value, json};
 
+use crate::action;
 use crate::error::{Error, Result};
 use crate::mcp::{ToolOutcome, refusal};
 
@@ -105,21 +106,25 @@ impl Output {
     }
 
     pub fn tool_result(&self, outcome: &ToolOutcome) -> Result<()> {
-        if outcome.is_error {
+        let required = action::detect(&outcome.result);
+        if required.is_none() && outcome.is_error {
             if let Some(error) = refusal(&outcome.result) {
                 return Err(error);
             }
             return Err(Error::Tool(error_text(&outcome.result)));
         }
         if self.quiet {
-            return Ok(());
+            return required.map_or(Ok(()), |action| Err(Error::ActionRequired(Box::new(action))));
         }
         if self.json {
             println_safe(&payload(&outcome.result).to_string());
         } else {
             println_safe(&human_text(&outcome.result));
         }
-        Ok(())
+        match required {
+            Some(action) => Err(Error::ActionRequired(Box::new(action))),
+            None => Ok(()),
+        }
     }
 
     pub fn error(&self, error: &Error) {
@@ -127,9 +132,17 @@ impl Output {
             return;
         }
         if self.json {
-            let body =
+            let mut body =
                 json!({"error": {"kind": error.kind(), "message": error.message(), "exitCode": error.exit_code()}});
+            if let Error::ActionRequired(required) = error {
+                body["error"]["action"] = json!(required);
+            }
             eprintln!("{body}");
+        } else if let Error::ActionRequired(required) = error {
+            eprintln!("{}", action::notice(required));
+            eprintln!(
+                "Depois de concluir, rode o comando de novo (--wait espera e repete sozinho; --open abre o link)."
+            );
         } else {
             eprintln!("etus: {}", error.message());
         }
@@ -182,5 +195,23 @@ mod tests {
             is_error: true,
         };
         assert_eq!(out.tool_result(&refused).unwrap_err().exit_code(), 4);
+    }
+
+    #[test]
+    fn action_required_results_exit_with_their_own_code() {
+        let out = Output {
+            json: true,
+            quiet: true,
+        };
+        let structured = json!({"status": "action_required", "action": {"kind": "consent", "title": "Autorizar", "message": "Autorize o app.", "url": "https://apps.etus.io/oauth/consent"}});
+        for is_error in [false, true] {
+            let outcome = ToolOutcome {
+                result: json!({"content": [{"type": "text", "text": "Abra https://apps.etus.io/oauth/consent"}], "structuredContent": structured, "isError": is_error}),
+                is_error,
+            };
+            let error = out.tool_result(&outcome).unwrap_err();
+            assert_eq!(error.exit_code(), crate::error::EXIT_ACTION_REQUIRED);
+            assert_eq!(error.message(), "Autorize o app.");
+        }
     }
 }

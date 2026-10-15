@@ -6,6 +6,10 @@ use crate::catalog::{App, AppCommand, Tool};
 use crate::schema;
 
 const TEMPLATE: &str = "{about-with-newline}\nUso: {usage}\n\n{all-args}{after-help}";
+const OPEN_HELP: &str =
+    "Se a ferramenta pedir uma ação sua (autorizar, conectar, entrar, pedir acesso), abre o link no navegador";
+const WAIT_HELP: &str = "Se a ferramenta pedir uma ação sua, espera você concluir e repete a chamada (padrão 300 s; --wait=SEGUNDOS, até 1800)";
+const DEFAULT_WAIT: &str = "300";
 const TOOL_TEMPLATE: &str = "{before-help}Uso: {usage}\n\n{all-args}{after-help}";
 
 #[derive(Debug, Parser)]
@@ -45,6 +49,19 @@ pub struct Cli {
     pub yes: bool,
     #[arg(long, global = true, help = "Mostra a chamada sem executar")]
     pub dry_run: bool,
+    #[arg(long, global = true, visible_alias = "abrir", help = OPEN_HELP)]
+    pub open: bool,
+    #[arg(
+        long,
+        global = true,
+        visible_alias = "aguardar",
+        value_name = "SEGUNDOS",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = DEFAULT_WAIT,
+        help = WAIT_HELP
+    )]
+    pub wait: Option<u64>,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -165,6 +182,20 @@ pub enum ConfigCmd {
         #[arg(value_enum, value_name = "ONDE", help = "arquivo ou chaveiro")]
         onde: StoreKind,
     },
+    #[command(
+        name = "abrir-links",
+        about = "Abre sozinho no navegador os links de ação pedidos pelas ferramentas, quando há terminal"
+    )]
+    AbrirLinks {
+        #[arg(value_enum, value_name = "VALOR", help = "sim ou nao")]
+        valor: Toggle,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Toggle {
+    Sim,
+    Nao,
 }
 
 #[derive(Debug, Subcommand)]
@@ -321,6 +352,24 @@ fn standalone_flags(cmd: Command) -> Command {
             .long("quiet")
             .action(ArgAction::SetTrue)
             .help("Não imprime nada em caso de sucesso"),
+    )
+    .arg(
+        Arg::new("open")
+            .long("open")
+            .visible_alias("abrir")
+            .action(ArgAction::SetTrue)
+            .help(OPEN_HELP),
+    )
+    .arg(
+        Arg::new("wait")
+            .long("wait")
+            .visible_alias("aguardar")
+            .value_name("SEGUNDOS")
+            .num_args(0..=1)
+            .require_equals(true)
+            .default_missing_value(DEFAULT_WAIT)
+            .value_parser(clap::value_parser!(u64))
+            .help(WAIT_HELP),
     )
     .arg(Arg::new("hub").long("hub").value_name("URL").hide(true))
     .arg(Arg::new("perfil").long("perfil").value_name("ID").hide(true))

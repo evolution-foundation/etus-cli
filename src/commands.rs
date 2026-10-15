@@ -4,10 +4,11 @@ use std::time::Duration;
 use clap::ArgMatches;
 use serde_json::{Map, Value, json};
 
+use crate::action::{self, Action};
 use crate::auth::oauth::{self, AuthorizationRequest};
 use crate::auth::store::{StoreKind, keychain_supported, store_for};
 use crate::catalog::{App, Tool, find_app};
-use crate::cli::{self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, SkillsCmd, TrabalhoCmd};
+use crate::cli::{self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, SkillsCmd, Toggle, TrabalhoCmd};
 use crate::config;
 use crate::confirm::{self, Decision};
 use crate::context::{Ctx, SET_COMPANY_TOOL};
@@ -50,6 +51,7 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
         Commands::Config { acao } => match acao.unwrap_or(ConfigCmd::Mostrar) {
             ConfigCmd::Mostrar => show_config(ctx),
             ConfigCmd::Armazenamento { onde } => choose_store(ctx, onde),
+            ConfigCmd::AbrirLinks { valor } => choose_open_actions(ctx, valor),
         },
         Commands::Token { force } => print_token(ctx, force),
         Commands::Trabalho {
@@ -385,7 +387,7 @@ fn skills(ctx: &Ctx, action: SkillsCmd) -> Result<()> {
         .ok_or_else(|| Error::Other(format!("Não sei qual parâmetro de {tool_name} recebe o texto.")))?;
     let mut args = Map::new();
     args.insert(param, Value::String(value));
-    execute(ctx, &tool, args, ctx.out, ctx.yes, ctx.dry_run)
+    execute(ctx, &tool, args, ctx.out, RunFlags::from_ctx(ctx))
 }
 
 fn completions(ctx: &Ctx, shell: clap_complete::Shell) -> Result<()> {
@@ -406,9 +408,24 @@ fn show_config(ctx: &Ctx) -> Result<()> {
         "cacheDir": s.paths.cache_dir,
         "tokenStore": s.token_store.label(),
         "tokenLocation": ctx.store().describe(),
+        "openActions": s.open_actions,
         "version": env!("CARGO_PKG_VERSION"),
     });
     ctx.out.print_value(&value);
+    Ok(())
+}
+
+fn choose_open_actions(ctx: &Ctx, value: Toggle) -> Result<()> {
+    let enabled = value == Toggle::Sim;
+    let mut file = config::load(&ctx.settings.paths)?;
+    file.open_actions = Some(enabled);
+    config::save(&ctx.settings.paths, &file)?;
+    let text = if enabled {
+        "Os links de ação vão abrir sozinhos no navegador quando houver terminal."
+    } else {
+        "Os links de ação só abrem com --open."
+    };
+    ctx.out.print_human(text, || json!({"openActions": enabled}));
     Ok(())
 }
 
@@ -561,14 +578,31 @@ fn run_tool(ctx: &Ctx, tool: &Tool, m: &ArgMatches) -> Result<()> {
         json: ctx.out.json || json_arg.is_some(),
         quiet: ctx.out.quiet || m.get_flag("quiet"),
     };
-    execute(
-        ctx,
-        tool,
-        args,
-        out,
-        ctx.yes || m.get_flag("yes"),
-        ctx.dry_run || m.get_flag("dry-run"),
-    )
+    let flags = RunFlags {
+        yes: ctx.yes || m.get_flag("yes"),
+        dry_run: ctx.dry_run || m.get_flag("dry-run"),
+        open: ctx.open || m.get_flag("open"),
+        wait: m.get_one::<u64>("wait").copied().or(ctx.wait),
+    };
+    execute(ctx, tool, args, out, flags)
+}
+
+pub struct RunFlags {
+    pub yes: bool,
+    pub dry_run: bool,
+    pub open: bool,
+    pub wait: Option<u64>,
+}
+
+impl RunFlags {
+    fn from_ctx(ctx: &Ctx) -> RunFlags {
+        RunFlags {
+            yes: ctx.yes,
+            dry_run: ctx.dry_run,
+            open: ctx.open,
+            wait: ctx.wait,
+        }
+    }
 }
 
 pub fn dry_run_plan(tool: &Tool, args: &Map<String, Value>, endpoint: &str) -> Value {
@@ -582,8 +616,8 @@ pub fn dry_run_plan(tool: &Tool, args: &Map<String, Value>, endpoint: &str) -> V
     })
 }
 
-fn execute(ctx: &Ctx, tool: &Tool, args: Map<String, Value>, out: Output, yes: bool, dry_run: bool) -> Result<()> {
-    match confirm::decide(tool.writes(), yes, dry_run, confirm::interactive()) {
+fn execute(ctx: &Ctx, tool: &Tool, args: Map<String, Value>, out: Output, flags: RunFlags) -> Result<()> {
+    match confirm::decide(tool.writes(), flags.yes, flags.dry_run, confirm::interactive()) {
         Decision::DryRun => {
             let plan = dry_run_plan(tool, &args, &ctx.settings.mcp_url());
             if out.json {
@@ -613,11 +647,43 @@ fn execute(ctx: &Ctx, tool: &Tool, args: Map<String, Value>, out: Output, yes: b
         }
         Decision::Run => {}
     }
-    let outcome = ctx.with_mcp(|mcp| mcp.call_tool(&tool.name, &Value::Object(args)))?;
+    let arguments = Value::Object(args);
+    let call = || ctx.with_mcp(|mcp| mcp.call_tool(&tool.name, &arguments));
+    let mut outcome = call()?;
+    if let Some(required) = action::detect(&outcome.result) {
+        offer_link(ctx, &required, flags.open);
+        if let Some(seconds) = flags.wait {
+            let limit = action::wait_limit(seconds);
+            eprintln!("{}", action::notice(&required));
+            eprintln!(
+                "Aguardando você concluir no navegador (até {} s; Ctrl+C para parar)...",
+                limit.as_secs()
+            );
+            outcome = action::poll_for_real(limit, call)?;
+            if action::detect(&outcome.result).is_some() {
+                eprintln!("O tempo de espera acabou e a ação ainda não foi concluída.");
+            } else {
+                eprintln!("Ação concluída. Seguindo com a chamada.");
+            }
+        }
+    }
     if tool.name == SET_COMPANY_TOOL && !outcome.is_error {
         ctx.forget_catalog()?;
     }
     out.tool_result(&outcome)
+}
+
+fn offer_link(ctx: &Ctx, required: &Action, explicit: bool) {
+    let interactive = std::io::stderr().is_terminal() && std::io::stdin().is_terminal();
+    let auto = ctx.settings.open_actions && interactive;
+    if !(explicit || auto) {
+        return;
+    }
+    if oauth::open_browser(&required.url) {
+        eprintln!("Abrimos o link no navegador.");
+    } else {
+        eprintln!("Não deu para abrir o navegador; abra o link abaixo.");
+    }
 }
 
 const WORK_VIA: &str = "cli";
