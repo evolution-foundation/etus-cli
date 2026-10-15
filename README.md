@@ -8,23 +8,35 @@ Contrato completo: `docs/specs/cli.md` no repositório do hub (`etusdigital/nexu
 
 ## Instalar
 
-O repositório é privado. Com o GitHub CLI autenticado:
+```sh
+curl -fsSL https://apps.etus.io/cli/install.sh | sh
+etus --version
+```
+
+O instalador escolhe o binário da sua máquina (macOS Apple Silicon ou Intel, Linux x86_64 ou aarch64), confere o `SHA256SUMS` e coloca o `etus` no PATH.
+
+Outras formas:
 
 ```sh
-# macOS Apple Silicon
+# Download direto da release (troque pelo nome da sua máquina)
+base=https://github.com/evolution-foundation/etus-cli/releases/latest/download
+curl -fsSLO "$base/etus-aarch64-macos" && curl -fsSLO "$base/SHA256SUMS"
+shasum -a 256 -c SHA256SUMS --ignore-missing
+chmod +x etus-aarch64-macos && sudo mv etus-aarch64-macos /usr/local/bin/etus
+# etus-aarch64-macos | etus-x86_64-macos | etus-x86_64-linux | etus-aarch64-linux
+
+# Com o GitHub CLI
 gh release download --repo evolution-foundation/etus-cli --pattern etus-aarch64-macos --output etus
-# macOS Intel: etus-x86_64-macos | Linux: etus-x86_64-linux
 chmod +x etus && sudo mv etus /usr/local/bin/etus
-etus --version
 ```
 
 Ou compile (Rust 1.89 ou mais novo):
 
 ```sh
-cargo install --git ssh://git@github.com/evolution-foundation/etus-cli --locked
+cargo install --git https://github.com/evolution-foundation/etus-cli --locked
 ```
 
-Depois, `etus atualizar-cli` baixa a versão mais nova sozinho (usa `GH_TOKEN`, `GITHUB_TOKEN` ou `gh auth token`).
+Depois, `etus atualizar-cli` baixa a versão mais nova sozinho, sem token: lê `VERSION`, o binário e o `SHA256SUMS` de `https://github.com/evolution-foundation/etus-cli/releases/latest/download/` e só troca o binário se o sha256 conferir. `ETUS_CLI_DOWNLOAD_BASE` aponta para outro endereço (um espelho, por exemplo). Se os arquivos públicos não existirem, usa `GH_TOKEN`, `GITHUB_TOKEN` ou `gh auth token` na API do GitHub, como reserva para um repositório privado.
 
 ## Entrar
 
@@ -217,12 +229,13 @@ A correção certa para quem quer o chaveiro, e para distribuir o binário, é a
 
 ## Publicar uma versão
 
-1. Suba a versão no `Cargo.toml` e no `CHANGELOG.md`.
-2. Gere os binários:
-   ```sh
-   cargo build --release --target aarch64-apple-darwin
-   TC=~/.rustup/toolchains/stable-aarch64-apple-darwin/bin
-   RUSTC=$TC/rustc $TC/cargo build --release --target x86_64-apple-darwin   # o cargo do Homebrew não tem a std do x86_64
-   cargo zigbuild --release --target x86_64-unknown-linux-gnu   # se tiver cargo-zigbuild
-   ```
-3. Renomeie para `etus-<arch>-<os>` (`etus-aarch64-macos`, `etus-x86_64-macos`, `etus-x86_64-linux`), gere `<nome>.sha256` com `shasum -a 256` e crie a release com a tag `vX.Y.Z` anexando os binários e os `.sha256`. O `etus atualizar-cli` procura exatamente esses nomes e confere o sha256 quando existe.
+Sem CI: os binários saem de um Mac com Docker (buildx) e rustup.
+
+1. Suba a versão no `Cargo.toml` (e no `Cargo.lock`) e escreva a seção dela no `CHANGELOG.md`.
+2. `scripts/release.sh X.Y.Z` gera em `dist/vX.Y.Z/`:
+   - `etus-aarch64-macos` e `etus-x86_64-macos`, nativos, assinados ad hoc (`codesign -s -`);
+   - `etus-x86_64-linux` e `etus-aarch64-linux`, estáticos (musl), com `docker buildx build --platform linux/amd64|linux/arm64` e `scripts/release.Dockerfile`;
+   - `SHA256SUMS`, `VERSION` e um `<binário>.sha256` por binário.
+
+   No fim, confere o sha256, a assinatura, que os de Linux são estáticos e que cada binário responde `etus X.Y.Z` a `--version` (os de Linux com `docker run --platform`, o Intel com Rosetta).
+3. Depois do merge na `main`, `scripts/release.sh X.Y.Z --publish` (com a `main` atualizada e limpa) gera tudo de novo e cria a release `vX.Y.Z` com esses arquivos e as notas do `CHANGELOG.md`. O `etus atualizar-cli` e o instalador procuram exatamente esses nomes.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 (2026-10-15)
+
+Binários públicos e instalador de uma linha.
+
+- `etus atualizar-cli` baixa sem token do GitHub: lê `VERSION`, o binário e o `SHA256SUMS` de `https://github.com/evolution-foundation/etus-cli/releases/latest/download/`. `ETUS_CLI_DOWNLOAD_BASE` troca esse endereço (um espelho interno, por exemplo); com ele definido, uma falha no endereço vira erro em vez de cair no GitHub.
+- O sha256 passa a ser obrigatório: sem `SHA256SUMS` (ou `<binário>.sha256`) que confira, nada é trocado.
+- O caminho antigo continua como reserva: se os arquivos públicos não existirem, usa `GH_TOKEN`, `GITHUB_TOKEN` ou `gh auth token` na API do GitHub, como antes.
+- `--verificar --json` traz `latest` sem o `v` (`0.4.1`).
+- `scripts/release.sh <versão>` gera os binários na própria máquina: macOS Apple Silicon e Intel nativos (assinados ad hoc) e Linux x86_64 e aarch64 estáticos (musl) com `docker buildx --platform`, mais `SHA256SUMS`, `VERSION` e um `.sha256` por binário. Confere que cada um roda `--version` (os de Linux com `docker run`). Com `--publish`, cria a release `v<versão>` no GitHub.
+- README: o instalador `curl -fsSL https://apps.etus.io/cli/install.sh | sh` vem primeiro.
+
 ## 0.4.0 (2026-10-14)
 
 Ação necessária com link para a tela certa.

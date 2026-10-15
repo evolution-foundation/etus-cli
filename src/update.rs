@@ -11,6 +11,10 @@ use crate::context::Ctx;
 use crate::error::{Error, Result};
 
 pub const REPO: &str = "evolution-foundation/etus-cli";
+pub const DEFAULT_DOWNLOAD_BASE: &str = "https://github.com/evolution-foundation/etus-cli/releases/latest/download/";
+pub const DOWNLOAD_BASE_ENV: &str = "ETUS_CLI_DOWNLOAD_BASE";
+pub const SUMS_FILE: &str = "SHA256SUMS";
+pub const VERSION_FILE: &str = "VERSION";
 
 #[derive(Debug, Deserialize)]
 struct Release {
@@ -23,6 +27,11 @@ struct Release {
 struct Asset {
     name: String,
     url: String,
+}
+
+enum Source {
+    Public { base: String },
+    GitHub { token: String, assets: Vec<Asset> },
 }
 
 pub fn asset_name() -> String {
@@ -46,9 +55,33 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-fn manual_instructions() -> String {
+pub fn download_url(base: &str, file: &str) -> String {
+    format!("{}/{file}", base.trim_end_matches('/'))
+}
+
+pub fn expected_sum(sums: &str, file: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let hash = fields.next()?;
+        let name = fields.next()?.trim_start_matches('*');
+        (name == file && hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit())).then(|| hash.to_lowercase())
+    })
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn download_base() -> (String, bool) {
+    match std::env::var(DOWNLOAD_BASE_ENV) {
+        Ok(value) if !value.trim().is_empty() => (value.trim().to_string(), true),
+        _ => (DEFAULT_DOWNLOAD_BASE.to_string(), false),
+    }
+}
+
+fn manual_instructions(base: &str) -> String {
     format!(
-        "Não achei um token do GitHub (GH_TOKEN, GITHUB_TOKEN ou `gh auth token`). O repositório {REPO} é privado.\nPara atualizar à mão: abra https://github.com/{REPO}/releases, baixe {} da versão mais nova, dê permissão de execução (chmod +x) e troque o binário atual ({}).",
+        "Não consegui baixar de {base} e não achei um token do GitHub (GH_TOKEN, GITHUB_TOKEN ou `gh auth token`) para o repositório privado {REPO}.\nPara atualizar à mão: abra https://github.com/{REPO}/releases, baixe {} da versão mais nova, confira com o {SUMS_FILE}, dê permissão de execução (chmod +x) e troque o binário atual ({}).",
         asset_name(),
         std::env::current_exe()
             .map(|p| p.display().to_string())
@@ -88,6 +121,88 @@ fn api_get(http: &Client, url: &str, token: &str, accept: &str) -> Result<reqwes
     }
 }
 
+fn public_get(http: &Client, base: &str, file: &str) -> Result<Option<Vec<u8>>> {
+    let url = download_url(base, file);
+    let response = http.get(&url).send()?;
+    match response.status().as_u16() {
+        200 => Ok(Some(response.bytes()?.to_vec())),
+        401 | 403 | 404 => Ok(None),
+        status => Err(Error::Network(format!("{url} respondeu HTTP {status}."))),
+    }
+}
+
+fn public_version(http: &Client, base: &str) -> Result<Option<String>> {
+    let Some(bytes) = public_get(http, base, VERSION_FILE)? else {
+        return Ok(None);
+    };
+    let text = String::from_utf8_lossy(&bytes).trim().to_string();
+    if parse_version(&text).is_none() {
+        return Err(Error::Other(format!(
+            "O arquivo {VERSION_FILE} em {base} não traz uma versão válida."
+        )));
+    }
+    Ok(Some(text))
+}
+
+impl Source {
+    fn fetch(&self, http: &Client, file: &str) -> Result<Option<Vec<u8>>> {
+        match self {
+            Source::Public { base } => public_get(http, base, file),
+            Source::GitHub { token, assets } => match assets.iter().find(|a| a.name == file) {
+                Some(asset) => Ok(Some(
+                    api_get(http, &asset.url, token, "application/octet-stream")?
+                        .bytes()?
+                        .to_vec(),
+                )),
+                None => Ok(None),
+            },
+        }
+    }
+
+    fn expected_sum(&self, http: &Client, file: &str) -> Result<Option<String>> {
+        if let Some(sums) = self.fetch(http, SUMS_FILE)? {
+            return Ok(expected_sum(&String::from_utf8_lossy(&sums), file));
+        }
+        Ok(self
+            .fetch(http, &format!("{file}.sha256"))?
+            .and_then(|text| expected_sum(&String::from_utf8_lossy(&text), file)))
+    }
+}
+
+fn resolve(ctx: &Ctx, http: &Client) -> Result<(Source, String)> {
+    let (base, explicit) = download_base();
+    match public_version(http, &base) {
+        Ok(Some(version)) => return Ok((Source::Public { base }, version)),
+        Ok(None) if explicit => {
+            return Err(Error::Other(format!(
+                "Não achei {VERSION_FILE} em {base}. Confira o {DOWNLOAD_BASE_ENV}."
+            )));
+        }
+        Err(error) if explicit => return Err(error),
+        _ => {}
+    }
+    let Some((token, source)) = github_token() else {
+        return Err(Error::Other(manual_instructions(&base)));
+    };
+    if source == "gh auth token" && !ctx.out.json {
+        eprintln!("Usando o token do GitHub CLI (gh auth token) para ler o repositório privado.");
+    }
+    let release: Release = api_get(
+        http,
+        &format!("https://api.github.com/repos/{REPO}/releases/latest"),
+        &token,
+        "application/vnd.github+json",
+    )?
+    .json()?;
+    Ok((
+        Source::GitHub {
+            token,
+            assets: release.assets,
+        },
+        release.tag_name,
+    ))
+}
+
 fn replace_binary(target: &Path, bytes: &[u8]) -> Result<()> {
     let dir = target
         .parent()
@@ -112,59 +227,41 @@ fn replace_binary(target: &Path, bytes: &[u8]) -> Result<()> {
 
 pub fn run(ctx: &Ctx, check_only: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
-    let Some((token, source)) = github_token() else {
-        return Err(Error::Other(manual_instructions()));
-    };
-    if source == "gh auth token" && !ctx.out.json {
-        eprintln!("Usando o token do GitHub CLI (gh auth token) para ler o repositório privado.");
-    }
     let http = ctx.http()?;
-    let release: Release = api_get(
-        http,
-        &format!("https://api.github.com/repos/{REPO}/releases/latest"),
-        &token,
-        "application/vnd.github+json",
-    )?
-    .json()?;
-    let newer = is_newer(&release.tag_name, current);
+    let (source, tag) = resolve(ctx, http)?;
+    let latest = tag.trim().trim_start_matches('v').to_string();
+    let newer = is_newer(&latest, current);
     if check_only || !newer {
         let text = if newer {
-            format!(
-                "Versão nova disponível: {} (você tem {current}). Rode `etus atualizar-cli`.",
-                release.tag_name
-            )
+            format!("Versão nova disponível: {latest} (você tem {current}). Rode `etus atualizar-cli`.")
         } else {
             format!("Você já está na versão mais nova ({current}).")
         };
         ctx.out.print_human(
             &text,
-            || json!({"current": current, "latest": release.tag_name, "updateAvailable": newer}),
+            || json!({"current": current, "latest": latest, "updateAvailable": newer}),
         );
         return Ok(());
     }
     let name = asset_name();
-    let asset = release.assets.iter().find(|a| a.name == name).ok_or_else(|| {
+    let bytes = source
+        .fetch(http, &name)?
+        .ok_or_else(|| Error::Other(format!("A versão {latest} não tem binário para esta máquina ({name}).")))?;
+    let expected = source.expected_sum(http, &name)?.ok_or_else(|| {
         Error::Other(format!(
-            "A versão {} não tem binário para esta máquina ({name}).",
-            release.tag_name
+            "A versão {latest} não publica o sha256 de {name}. Nada foi trocado."
         ))
     })?;
-    let bytes = api_get(http, &asset.url, &token, "application/octet-stream")?.bytes()?;
-    if let Some(sum) = release.assets.iter().find(|a| a.name == format!("{name}.sha256")) {
-        let expected = api_get(http, &sum.url, &token, "application/octet-stream")?.text()?;
-        let expected = expected.split_whitespace().next().unwrap_or("").to_lowercase();
-        let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-        if expected != actual {
-            return Err(Error::Other(
-                "O binário baixado não confere com o sha256 publicado. Nada foi trocado.".into(),
-            ));
-        }
+    if expected != sha256_hex(&bytes) {
+        return Err(Error::Other(
+            "O binário baixado não confere com o sha256 publicado. Nada foi trocado.".into(),
+        ));
     }
     let target = std::env::current_exe()?;
     replace_binary(&target, &bytes)?;
     ctx.out.print_human(
-        &format!("etus atualizado de {current} para {}.", release.tag_name),
-        || json!({"previous": current, "current": release.tag_name}),
+        &format!("etus atualizado de {current} para {latest}."),
+        || json!({"previous": current, "current": latest}),
     );
     Ok(())
 }
@@ -188,5 +285,30 @@ mod tests {
         let name = asset_name();
         assert!(name.starts_with("etus-"));
         assert!(name.contains(std::env::consts::OS));
+    }
+
+    #[test]
+    fn download_url_joins_with_one_slash() {
+        assert_eq!(download_url("https://x.io/dl/", "VERSION"), "https://x.io/dl/VERSION");
+        assert_eq!(download_url("https://x.io/dl", "VERSION"), "https://x.io/dl/VERSION");
+    }
+
+    #[test]
+    fn sums_are_found_by_exact_file_name() {
+        let a = "a".repeat(64);
+        let b = "B".repeat(64);
+        let sums = format!("{a}  etus-x86_64-linux\n{b} *etus-aarch64-linux\nshort  etus-x\n");
+        assert_eq!(expected_sum(&sums, "etus-x86_64-linux"), Some(a));
+        assert_eq!(expected_sum(&sums, "etus-aarch64-linux"), Some("b".repeat(64)));
+        assert_eq!(expected_sum(&sums, "etus-x"), None);
+        assert_eq!(expected_sum(&sums, "etus-x86_64-macos"), None);
+    }
+
+    #[test]
+    fn sha256_is_lowercase_hex() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }
