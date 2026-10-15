@@ -108,6 +108,7 @@ pub enum Commands {
         acao: SkillsCmd,
     },
     #[command(
+        visible_alias = "init",
         about = "Configura regras de governança e perfis nos agentes do projeto",
         long_about = "Configura regras de conduta, engenharia e convenções da Etus para múltiplos agentes (Cursor, Antigravity, Windsurf, Copilot, Codex, Claude Code).\n\nInjeta blocos demarcados que preservam o restante do arquivo intacto."
     )]

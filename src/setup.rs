@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use serde_json::{Value, json};
@@ -123,8 +124,8 @@ pub fn parse_targets(inputs: Option<&[String]>) -> Result<Vec<Target>> {
 
 #[derive(Debug, Clone)]
 pub struct SetupOptions {
-    pub targets: Vec<Target>,
-    pub perfil: String,
+    pub targets: Option<Vec<Target>>,
+    pub perfil: Option<String>,
     pub projeto: Option<String>,
     pub workspace: Option<String>,
     pub force: bool,
@@ -415,14 +416,128 @@ pub fn detect_default_profile(root: &Path) -> &'static str {
     "codigo"
 }
 
+fn prompt_profile(detected: &str) -> Result<String> {
+    print!("Perfil detectado: {detected}\nUsar esse perfil? (S/n): ");
+    std::io::stdout().flush().map_err(|e| Error::Other(e.to_string()))?;
+
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    let clean = input.trim();
+
+    if clean.is_empty()
+        || clean.eq_ignore_ascii_case("s")
+        || clean.eq_ignore_ascii_case("sim")
+        || clean.eq_ignore_ascii_case("y")
+        || clean.eq_ignore_ascii_case("yes")
+    {
+        return Ok(detected.to_string());
+    }
+
+    println!("\nPerfis disponíveis: codigo, produto, design, ops, admin, app-nexus");
+    print!("Digite o perfil desejado [{detected}]: ");
+    std::io::stdout().flush().map_err(|e| Error::Other(e.to_string()))?;
+
+    let mut custom = String::new();
+    std::io::stdin()
+        .read_line(&mut custom)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    let clean_custom = custom.trim();
+
+    if clean_custom.is_empty() {
+        Ok(detected.to_string())
+    } else {
+        Ok(clean_custom.to_string())
+    }
+}
+
+fn prompt_targets() -> Result<Vec<Target>> {
+    println!("\nEscolha as plataformas de IA que você deseja configurar:");
+    println!("  [1] Universal: todas as plataformas (Cursor, Antigravity, Windsurf, Copilot, Codex, Claude Code)");
+    println!("  [2] Cursor (.cursor/rules/etus.mdc)");
+    println!("  [3] Antigravity CLI (GEMINI.md)");
+    println!("  [4] Windsurf Cascade (.windsurfrules)");
+    println!("  [5] GitHub Copilot (.github/copilot-instructions.md)");
+    println!("  [6] Codex / OpenAI (AGENTS.md)");
+    println!("  [7] Claude Code (.claude/settings.json)");
+    print!("Escolha [1-7 ou vírgulas, padrão 1]: ");
+    std::io::stdout().flush().map_err(|e| Error::Other(e.to_string()))?;
+
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    let clean = input.trim();
+
+    if clean.is_empty() || clean == "1" || clean.eq_ignore_ascii_case("all") {
+        return Ok(Target::all());
+    }
+
+    let mut out = BTreeSet::new();
+    for part in clean.split(',') {
+        match part.trim() {
+            "1" => return Ok(Target::all()),
+            "2" => {
+                out.insert(Target::Cursor);
+            }
+            "3" => {
+                out.insert(Target::Antigravity);
+            }
+            "4" => {
+                out.insert(Target::Windsurf);
+            }
+            "5" => {
+                out.insert(Target::Copilot);
+            }
+            "6" => {
+                out.insert(Target::Codex);
+            }
+            "7" => {
+                out.insert(Target::ClaudeCode);
+            }
+            other => {
+                if let Some(t) = Target::from_str_lenient(other) {
+                    out.insert(t);
+                }
+            }
+        }
+    }
+
+    if out.is_empty() {
+        Ok(Target::all())
+    } else {
+        Ok(out.into_iter().collect())
+    }
+}
+
 pub fn run(ctx: &Ctx, opts: SetupOptions) -> Result<()> {
     let cwd = std::env::current_dir().map_err(|e| Error::Other(e.to_string()))?;
     let root = work::git_context(&cwd).map(|git| git.top).unwrap_or(cwd.clone());
 
-    let perfil = if opts.perfil.is_empty() {
-        detect_default_profile(&root).to_string()
-    } else {
-        opts.perfil
+    let is_interactive = crate::confirm::interactive() && !ctx.yes && !ctx.dry_run && !ctx.out.json && !ctx.out.quiet;
+
+    let perfil = match opts.perfil {
+        Some(p) if !p.trim().is_empty() => p,
+        _ => {
+            let detected = detect_default_profile(&root);
+            if is_interactive {
+                prompt_profile(detected)?
+            } else {
+                detected.to_string()
+            }
+        }
+    };
+
+    let targets = match opts.targets {
+        Some(t) => t,
+        None => {
+            if is_interactive {
+                prompt_targets()?
+            } else {
+                Target::all()
+            }
+        }
     };
 
     let git_ctx = work::git_context(&cwd);
@@ -440,11 +555,11 @@ pub fn run(ctx: &Ctx, opts: SetupOptions) -> Result<()> {
         .unwrap_or_else(|| "ETUS".to_string());
 
     let workspace = opts.workspace.unwrap_or_else(|| "etus".to_string());
-    let has_codex = opts.targets.contains(&Target::Codex);
+    let has_codex = targets.contains(&Target::Codex);
 
     let mut generated_files = Vec::new();
 
-    for target in &opts.targets {
+    for target in &targets {
         let rel_file = target.relative_file();
         let target_path = root.join(rel_file);
 
@@ -510,7 +625,7 @@ pub fn run(ctx: &Ctx, opts: SetupOptions) -> Result<()> {
         "perfil": perfil,
         "projeto": projeto,
         "workspace": workspace,
-        "targets": opts.targets.iter().map(|t| t.id()).collect::<Vec<_>>(),
+        "targets": targets.iter().map(|t| t.id()).collect::<Vec<_>>(),
         "files": generated_files
     });
 

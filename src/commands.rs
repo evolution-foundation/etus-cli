@@ -50,8 +50,10 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
             force,
             allow_outside,
         } => {
-            let targets = crate::setup::parse_targets(target.as_deref())?;
-            let perfil = perfil.unwrap_or_default();
+            let targets = match target {
+                Some(t) => Some(crate::setup::parse_targets(Some(&t))?),
+                None => None,
+            };
             let opts = crate::setup::SetupOptions {
                 targets,
                 perfil,
