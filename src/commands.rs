@@ -42,12 +42,25 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
         Commands::Perfil { acao } => profile(ctx, acao.unwrap_or(PerfilCmd::Mostrar)),
         Commands::Atualizar => refresh(ctx),
         Commands::Skills { acao } => skills(ctx, acao),
-        Commands::Setup => {
-            ctx.out.print_human(
-                "em breve: o setup vai preparar esta máquina pelo Extensões.",
-                || json!({"status": "em breve"}),
-            );
-            Ok(())
+        Commands::Setup {
+            target,
+            perfil,
+            projeto,
+            workspace,
+            force,
+            allow_outside,
+        } => {
+            let targets = crate::setup::parse_targets(target.as_deref())?;
+            let perfil = perfil.unwrap_or_default();
+            let opts = crate::setup::SetupOptions {
+                targets,
+                perfil,
+                projeto,
+                workspace,
+                force,
+                allow_outside,
+            };
+            crate::setup::run(ctx, opts)
         }
         Commands::Completions { shell } => completions(ctx, shell),
         Commands::AtualizarCli { verificar } => crate::update::run(ctx, verificar),
