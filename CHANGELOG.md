@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 (2026-10-14)
+
+Etiqueta de trabalho.
+
+- `etus trabalho ENG-123` marca o item do Plane em que você está trabalhando, com `--fase`, `--projeto` (`hub:<id>`, `chat:<id>` ou `rotina:<id>`), `--empresa` e `--etiqueta`. Só com `--fase`, `--projeto` ou `--empresa`, altera o que já está marcado.
+- O estado persiste no mesmo arquivo que o hook do instalador do roteador já lê (`<git dir>/etus-work` ou `~/.claude/etus-work`), então o item passa a ir no header `x-etus-work` do Claude Code a partir do próximo prompt.
+- A empresa vem da empresa ativa do etus (cache do catálogo, sem rede).
+- `etus trabalho mostrar` (também `etus trabalho` sozinho), `cabecalho` e `limpar`. O header segue a v2 do contrato (`docs/specs/work-context.md` no hub): `v=2` só com empresa ou projeto, ordem canônica e no máximo 256 caracteres.
+
 ## 0.2.1 (2026-10-14)
 
 Token em arquivo e sem janelas do chaveiro.

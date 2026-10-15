@@ -115,6 +115,41 @@ Com `--json`, a saída é o `structuredContent` da ferramenta ou o texto dela j�
 | 3 | precisa entrar: rode `etus login` |
 | 4 | sem permissão: ferramenta não liberada, conexão só de leitura, sem "Conectar agentes externos" |
 
+## Etiqueta de trabalho
+
+`etus trabalho` marca em qual item do Plane você está trabalhando, para o uso de IA ser medido por empresa, projeto e item no painel do roteador. Contrato completo: `docs/specs/work-context.md` no repositório do hub.
+
+```sh
+etus trabalho ENG-123                         # marca o item; empresa = empresa ativa do etus
+etus trabalho ENG-123 --fase review           # plan, impl, review ou qa
+etus trabalho ENG-123 --projeto hub:<id>      # projeto da Etus: hub:<id>, chat:<id> ou rotina:<id>
+etus trabalho ENG-123 --empresa <id>          # outra empresa (id da empresa no hub)
+etus trabalho --etiqueta estudo-cache         # trabalho fora do Plane
+etus trabalho --fase qa                       # só troca a fase do que já está marcado
+etus trabalho                                 # o mesmo que `etus trabalho mostrar`
+etus trabalho mostrar                         # estado e a linha do header que vai sair
+etus trabalho cabecalho                       # só a linha x-etus-work, para hooks e scripts
+etus trabalho limpar                          # apaga a marca (volta ao que o branch disser)
+```
+
+- **Persiste até mudar.** Dentro de um repositório, o estado fica em `<git dir>/etus-work` (um por worktree); fora, em `~/.claude/etus-work` (ou `$CLAUDE_CONFIG_DIR/etus-work`). O formato é o mesmo do utilitário do instalador do roteador (`issue`, `phase`, `tag`, `workspace`), com as chaves novas `company` e `project`.
+- **Empresa automática.** Vem da empresa ativa guardada no cache do catálogo (`etus empresa usar`), sem chamar a rede. Sem login nem `--empresa`, fica vazia.
+- **Item pelo branch.** Sem item marcado, vale a chave escrita no branch (`feat/eng-123-upload` vira `ENG-123`), como no hook.
+- **Versão do header.** `v=2` só quando há empresa ou projeto (`c`, `pj` e `via`); senão `v=1`, que todo leitor antigo entende. A linha tem no máximo 256 caracteres: se passar, cortam-se a etiqueta, o repositório e o workspace, nunca empresa, projeto ou item.
+- `--json` em `mostrar` traz `version`, `item`, `planeProject`, `project`, `company`, `tag`, `repo`, `workspace`, `phase`, `source`, `header` e `statePath`.
+
+### Como o header chega ao Claude Code
+
+1. O Claude Code manda em toda chamada os headers de `ANTHROPIC_CUSTOM_HEADERS` (um por linha, `Nome: valor`), lidos do `env` dos arquivos de configuração.
+2. O instalador do roteador (tela **Minha chave** do painel) registra hooks do Claude Code em `SessionStart`, `CwdChanged`, `FileChanged` (no `.git/HEAD`) e `UserPromptSubmit`. A cada evento, o hook lê o arquivo de estado acima e reescreve `ANTHROPIC_CUSTOM_HEADERS` em `.claude/settings.local.json` do projeto com a linha `x-etus-work`, mantendo os outros headers que você já tinha.
+3. Por isso `etus trabalho` vale a partir do próximo prompt, sem reiniciar o Claude Code. O roteador remove o header antes de chamar o provedor.
+
+Enquanto o hook do instalador não escrever `v=2`, ele manda o item, a fase e a etiqueta marcados aqui em `v=1`; empresa e projeto aparecem só em `etus trabalho mostrar` e `cabecalho`. Quando o `etus setup` existir, ele assume esses hooks.
+
+### Dois binários `etus`
+
+O instalador do roteador põe um utilitário em Python em `~/.local/bin/etus`, e esta CLI costuma ficar em `/usr/local/bin/etus`. Os hooks chamam o utilitário pelo caminho absoluto, então funcionam com qualquer um dos dois primeiro no `PATH`, e os dois leem e gravam o mesmo arquivo de estado. Nesta CLI, `etus work ...` é o app Etus Work; por isso o comando aqui é `etus trabalho` (o `etus work start` do utilitário Python continua funcionando pelo caminho dele).
+
 ## Configuração
 
 | O quê | Como |

@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 use crate::auth::oauth::{self, AuthorizationRequest};
 use crate::auth::store::{StoreKind, keychain_supported, store_for};
 use crate::catalog::{App, Tool, find_app};
-use crate::cli::{self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, SkillsCmd};
+use crate::cli::{self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, SkillsCmd, TrabalhoCmd};
 use crate::config;
 use crate::confirm::{self, Decision};
 use crate::context::{Ctx, SET_COMPANY_TOOL};
@@ -15,6 +15,7 @@ use crate::error::{EXIT_USAGE, Error, Result};
 use crate::naming::slug;
 use crate::output::{Output, pretty};
 use crate::schema;
+use crate::work;
 
 const SKILLS_SEARCH_TOOL: &str = "extensoes__catalogo_buscar";
 const SKILLS_READ_TOOL: &str = "extensoes__catalogo_ler";
@@ -51,6 +52,23 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
             ConfigCmd::Armazenamento { onde } => choose_store(ctx, onde),
         },
         Commands::Token { force } => print_token(ctx, force),
+        Commands::Trabalho {
+            item,
+            fase,
+            projeto,
+            empresa,
+            etiqueta,
+            acao,
+        } => {
+            let change = work::Change {
+                item,
+                phase: fase,
+                project: projeto,
+                company: empresa,
+                tag: etiqueta,
+            };
+            trabalho(ctx, change, acao)
+        }
         Commands::External(args) => external(ctx, args),
     }
 }
@@ -600,6 +618,56 @@ fn execute(ctx: &Ctx, tool: &Tool, args: Map<String, Value>, out: Output, yes: b
         ctx.forget_catalog()?;
     }
     out.tool_result(&outcome)
+}
+
+const WORK_VIA: &str = "cli";
+
+fn trabalho(ctx: &Ctx, change: work::Change, action: Option<TrabalhoCmd>) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let git = work::git_context(&cwd);
+    let path = work::state_path(git.as_ref(), work::claude_home().as_deref())?;
+    let current = work::load_state(&path);
+    match action {
+        Some(TrabalhoCmd::Limpar) => work::clear_state(&path)?,
+        Some(TrabalhoCmd::Mostrar | TrabalhoCmd::Cabecalho) | None if change.is_empty() => {}
+        _ => {
+            let active =
+                crate::catalog::load_cache(&ctx.settings.paths, &ctx.settings.hub, ctx.settings.perfil.as_deref())
+                    .and_then(|cache| cache.company)
+                    .map(|company| company.id);
+            work::save_state(&path, &work::apply(&current, &change, active.as_deref())?)?;
+        }
+    }
+    let state = work::load_state(&path);
+    let fields = work::resolve(&state, git.as_ref(), &work::read_mapping(git.as_ref()), WORK_VIA);
+    if matches!(action, Some(TrabalhoCmd::Cabecalho)) {
+        ctx.out.print_human(&fields.line(), || json!({"header": fields.line()}));
+        return Ok(());
+    }
+    let dash = |s: &str| if s.is_empty() { "-".to_string() } else { s.to_string() };
+    let text = [
+        format!("item:              {}", dash(&fields.issue)),
+        format!("projeto do Plane:  {}", dash(&fields.plane_project)),
+        format!("projeto:           {}", dash(&fields.project)),
+        format!("empresa:           {}", dash(&fields.company)),
+        format!("etiqueta:          {}", dash(&fields.tag)),
+        format!("repositório:       {}", dash(&fields.repo)),
+        format!("fase:              {}", fields.phase),
+        format!("origem:            {}", fields.source),
+        format!("header:            {}", fields.line()),
+    ]
+    .join("\n");
+    let text = if fields.source == "none" {
+        format!("{text}\n\nNenhum trabalho marcado: o uso desta pasta não está sendo atribuído a nenhum item.")
+    } else {
+        text
+    };
+    ctx.out.print_human(&text, || {
+        let mut value = fields.to_json();
+        value["statePath"] = json!(path.display().to_string());
+        value
+    });
+    Ok(())
 }
 
 #[cfg(test)]

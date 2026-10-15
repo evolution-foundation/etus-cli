@@ -11,6 +11,7 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "completions",
     "atualizar-cli",
     "config",
+    "trabalho",
     "help",
 ];
 
