@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 (2026-10-15)
+
+Skills dos seus apps para os agentes.
+
+- `etus skills sincronizar` (também `etus skills sync`) gera uma skill por app que você pode usar na empresa ativa, a partir do catálogo atual: para que o app serve, cada comando com aliases, resumo, leitura ou altera (e destrutiva), permissão exigida e parâmetros (obrigatórios com tipo, opcionais pelo nome), receitas e cuidados do guia do app, e as regras de confirmação, `--yes` e ação necessária.
+- Destino: `--agente claude|codex|todos` (padrão claude: `~/.claude/skills` ou `$CLAUDE_CONFIG_DIR/skills`; Codex: `~/.agents/skills`), `--projeto` (`.claude/skills` e `.agents/skills` na raiz do repositório ou na pasta atual) e `--pasta <dir>`.
+- Pastas `etus-<app>` com uma linha marcadora; só essas são atualizadas ou removidas (app que saiu da sua lista). `etus-cli` é reservado para a skill geral do etus-skills. `SKILL.md` feito à mão com o mesmo nome fica intacto (ignorado). Idempotente, com `--dry-run` e `--json`.
+- O guia vem de `etus_detalhar` com `app:<prefixo>` no hub (bloco `guide` do manifesto). Num hub sem guia, a skill sai só das ferramentas e o etus avisa no stderr.
+
 ## 0.4.1 (2026-10-15)
 
 Binários públicos e instalador de uma linha.

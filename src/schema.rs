@@ -19,7 +19,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn label(&self) -> String {
+    pub fn label(&self) -> String {
         match self {
             Kind::String => "texto".into(),
             Kind::Integer => "inteiro".into(),

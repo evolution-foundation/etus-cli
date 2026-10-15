@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod naming;
 pub mod output;
 pub mod schema;
+pub mod skills;
 pub mod update;
 pub mod work;
 

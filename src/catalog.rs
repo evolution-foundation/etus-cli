@@ -10,7 +10,7 @@ use crate::error::Result;
 use crate::naming::{app_names, is_builtin, is_pt_br, kebab, slug};
 
 pub const SEPARATOR: &str = "__";
-const UNPREFIXED: &str = "geral";
+pub const UNPREFIXED: &str = "geral";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Annotations {

@@ -1,9 +1,12 @@
+use std::path::PathBuf;
+
 use clap::{Arg, ArgAction, Command, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
 use crate::auth::store::StoreKind;
 use crate::catalog::{App, AppCommand, Tool};
 use crate::schema;
+use crate::skills::SkillAgent;
 
 const TEMPLATE: &str = "{about-with-newline}\nUso: {usage}\n\n{all-args}{after-help}";
 const OPEN_HELP: &str =
@@ -99,7 +102,7 @@ pub enum Commands {
     },
     #[command(about = "Renova o catálogo de comandos (ferramentas liberadas para você)")]
     Atualizar,
-    #[command(about = "Busca e lê skills do catálogo do Extensões")]
+    #[command(about = "Busca e lê skills do Extensões e gera as skills dos seus apps para os agentes")]
     Skills {
         #[command(subcommand)]
         acao: SkillsCmd,
@@ -233,6 +236,32 @@ pub enum SkillsCmd {
     Ler {
         #[arg(value_name = "ID")]
         id: String,
+    },
+    #[command(
+        visible_alias = "sync",
+        about = "Gera uma skill por app que você pode usar, na pasta de skills do agente",
+        long_about = "Gera uma skill (SKILL.md) por app que você pode usar na empresa ativa, com os comandos, parâmetros, permissões, receitas e cuidados, a partir do catálogo atual do hub.\n\nGrava em ~/.claude/skills (Claude Code) ou ~/.agents/skills (Codex); --projeto usa a pasta do repositório. Só mexe nas pastas etus-<app> que ele mesmo gerou: atualiza as que mudaram e remove as dos apps que você não usa mais. Rode de novo depois de trocar de empresa ou ganhar acesso a um app."
+    )]
+    Sincronizar {
+        #[arg(
+            long,
+            value_enum,
+            default_value = "claude",
+            value_name = "AGENTE",
+            help = "claude, codex ou todos"
+        )]
+        agente: SkillAgent,
+        #[arg(
+            long,
+            help = "Grava nas pastas do projeto (raiz do repositório ou pasta atual) em vez das suas"
+        )]
+        projeto: bool,
+        #[arg(
+            long,
+            value_name = "PASTA",
+            help = "Pasta de skills explícita; vale mais que --agente e --projeto"
+        )]
+        pasta: Option<PathBuf>,
     },
 }
 
