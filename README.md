@@ -114,6 +114,44 @@ Com `--json`, a saída é o `structuredContent` da ferramenta ou o texto dela j�
 | 2 | uso errado: flag inválida, obrigatório faltando, escrita sem `--yes`, cancelado |
 | 3 | precisa entrar: rode `etus login` |
 | 4 | sem permissão: ferramenta não liberada, conexão só de leitura, sem "Conectar agentes externos" |
+| 5 | ação necessária: a ferramenta pediu que você faça algo numa tela do hub (autorizar, conectar, entrar, pedir acesso); o link está no stderr e no JSON do stdout |
+
+## Ação necessária: o link para a tela certa
+
+Alguns passos precisam de um clique seu por definição: autorizar um app a agir em seu nome, conectar uma conta (Google, GitHub, Slack), entrar, pedir uma permissão a um admin. Nesses casos a ferramenta não falha: devolve um resultado normal com este `structuredContent` (contrato da plataforma, `docs/specs/action-required.md` no hub):
+
+```json
+{
+  "status": "action_required",
+  "action": {
+    "kind": "consent | connect | login | permission",
+    "title": "Conectar o Google",
+    "message": "Conecte sua conta Google para ler a agenda.",
+    "url": "https://apps.etus.io/...",
+    "missing": ["google"],
+    "expiresAt": "2026-10-14T18:00:00Z"
+  }
+}
+```
+
+O etus também reconhece o mesmo objeto quando ele vem só como JSON no texto da ferramenta. Ao receber:
+
+- **stdout** fica igual a qualquer outra resposta: o resultado da ferramenta (com `--json`, o objeto acima compacto), para o agente ler o link;
+- **stderr** mostra o título, a mensagem, o que falta e o link (`Abra: https://...`); com `--json`, o erro traz também `action`: `{"error":{"kind":"action_required","message","exitCode":5,"action":{...}}}`;
+- **código de saída 5**, para scripts e agentes detectarem sem ler o texto.
+
+O etus nunca faz a ação por você: ele só mostra o link (e abre o navegador, se você pedir). Só abre links `https` (ou `http` em localhost).
+
+```sh
+etus <app> <comando> --open           # abre o link no navegador (também --abrir)
+etus <app> <comando> --wait           # mostra o link, espera você concluir e repete a chamada (até 300 s)
+etus <app> <comando> --wait=600 --open
+etus config abrir-links sim            # abre sozinho quando há terminal (nao para desligar)
+```
+
+- `--open` abre sempre, com ou sem terminal. Sem a flag, o link só abre sozinho com `etus config abrir-links sim` (`open_actions` no arquivo) ou `ETUS_OPEN_ACTIONS=1`, e ainda assim só quando stdin e stderr são um terminal; agentes rodando sem terminal nunca abrem o navegador sem `--open`.
+- `--wait[=SEGUNDOS]` (também `--aguardar`) repete a mesma chamada, com os mesmos argumentos e a mesma confirmação, a primeira vez depois de 2 s e depois a cada 5 s, até a resposta não ser mais `action_required` ou o tempo acabar (padrão 300 s, no máximo 1800). Concluiu: imprime o resultado final e sai com o código dele. O tempo acabou: imprime o último resultado e sai com 5. Num agente, só use `--wait` quando a pessoa estiver por perto para clicar.
+- As flags valem antes do app (`etus --open tarefas ...`) ou depois do comando. Por isso `open`, `abrir`, `wait` e `aguardar` passam a ser nomes reservados: um parâmetro de ferramenta com esse nome vira `--arg-open`, como já acontecia com `json` e `yes`.
 
 ## Etiqueta de trabalho
 
@@ -159,6 +197,7 @@ O instalador do roteador põe um utilitário em Python em `~/.local/bin/etus`, e
 | Cache do catálogo | 5 minutos (`cache_ttl_secs` no arquivo); `etus atualizar` renova na hora |
 | Arquivo | `config.json` na pasta de configuração do usuário (`etus config` mostra o caminho) |
 | Pastas | `ETUS_CONFIG_DIR` troca a pasta inteira |
+| Links de ação | `etus config abrir-links sim` ou `nao` (`open_actions` no arquivo), ou `ETUS_OPEN_ACTIONS=1` ou `0`, que vale mais; padrão não abrir sozinho |
 | Token | `etus config armazenamento arquivo` ou `chaveiro` (`token_store` no arquivo), ou `ETUS_TOKEN_STORE=file` ou `keychain`, que vale mais; padrão arquivo no macOS e no Linux, Gerenciador de Credenciais no Windows |
 
 Autocompletar: `etus completions zsh > ~/.zfunc/_etus` (também bash, fish, powershell, elvish).

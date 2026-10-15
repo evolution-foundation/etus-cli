@@ -26,6 +26,8 @@ pub struct Ctx {
     pub out: Output,
     pub yes: bool,
     pub dry_run: bool,
+    pub open: bool,
+    pub wait: Option<u64>,
     http: OnceCell<Client>,
 }
 
@@ -45,8 +47,14 @@ impl Ctx {
             out,
             yes,
             dry_run,
+            open: false,
+            wait: None,
             http: OnceCell::new(),
         }
+    }
+
+    pub fn with_actions(self, open: bool, wait: Option<u64>) -> Ctx {
+        Ctx { open, wait, ..self }
     }
 
     pub fn http(&self) -> Result<&Client> {

@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::naming::kebab;
 
 pub const RESERVED_FLAGS: &[&str] = &[
-    "help", "json", "input", "yes", "dry-run", "quiet", "hub", "perfil", "version",
+    "help", "json", "input", "yes", "dry-run", "quiet", "hub", "perfil", "version", "open", "abrir", "wait", "aguardar",
 ];
 
 #[derive(Debug, Clone, PartialEq)]

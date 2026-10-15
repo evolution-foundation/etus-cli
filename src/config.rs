@@ -22,6 +22,8 @@ pub struct ConfigFile {
     pub cache_ttl_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_store: Option<StoreKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_actions: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub clients: BTreeMap<String, String>,
 }
@@ -146,6 +148,14 @@ pub fn normalize_hub(raw: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+pub fn parse_toggle(raw: &str) -> Option<bool> {
+    match raw.trim().to_lowercase().as_str() {
+        "1" | "true" | "sim" | "s" | "yes" | "on" => Some(true),
+        "0" | "false" | "nao" | "não" | "n" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub hub: String,
@@ -153,6 +163,7 @@ pub struct Settings {
     pub cache_ttl: Duration,
     pub token_store: StoreKind,
     pub token_store_from_env: bool,
+    pub open_actions: bool,
     pub paths: Paths,
     pub file: ConfigFile,
 }
@@ -170,10 +181,16 @@ impl Settings {
             .map(str::to_string)
             .or_else(|| file.perfil.clone())
             .filter(|p| !p.trim().is_empty());
+        let open_actions = std::env::var("ETUS_OPEN_ACTIONS")
+            .ok()
+            .and_then(|v| parse_toggle(&v))
+            .or(file.open_actions)
+            .unwrap_or(false);
         let env_store = std::env::var("ETUS_TOKEN_STORE").ok().filter(|v| !v.trim().is_empty());
         Ok(Settings {
             token_store: select_kind(env_store.as_deref(), file.token_store)?,
             token_store_from_env: env_store.is_some(),
+            open_actions,
             hub: normalize_hub(&hub)?,
             perfil,
             cache_ttl: Duration::from_secs(file.cache_ttl_secs.unwrap_or(DEFAULT_CACHE_TTL_SECS)),
@@ -216,6 +233,7 @@ mod tests {
             cache_ttl: Duration::from_secs(1),
             token_store: StoreKind::File,
             token_store_from_env: false,
+            open_actions: false,
             paths: Paths::at(Path::new("/tmp/x")),
             file: ConfigFile::default(),
         };
@@ -225,6 +243,15 @@ mod tests {
             ..settings
         };
         assert_eq!(plain.mcp_url(), "https://apps.etus.io/mcp");
+    }
+
+    #[test]
+    fn toggles_accept_pt_and_en() {
+        assert_eq!(parse_toggle("sim"), Some(true));
+        assert_eq!(parse_toggle(" 1 "), Some(true));
+        assert_eq!(parse_toggle("não"), Some(false));
+        assert_eq!(parse_toggle("off"), Some(false));
+        assert_eq!(parse_toggle("talvez"), None);
     }
 
     #[test]
