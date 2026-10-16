@@ -418,7 +418,9 @@ pub fn detect_default_profile(root: &Path) -> &'static str {
 }
 
 fn prompt_profile(detected: &str) -> Result<String> {
-    print!("Perfil de engenharia [{detected}] (Enter para confirmar ou digite outro): ");
+    println!("Perfil de trabalho:");
+    println!("  [1] codigo  [2] produto  [3] design  [4] ops  [5] admin  [6] app-nexus");
+    print!("Escolha [1-6 ou nome, padrão '{detected}']: ");
     std::io::stdout().flush().map_err(|e| Error::Other(e.to_string()))?;
 
     let mut input = String::new();
@@ -428,9 +430,17 @@ fn prompt_profile(detected: &str) -> Result<String> {
     let clean = input.trim();
 
     if clean.is_empty() {
-        Ok(detected.to_string())
-    } else {
-        Ok(clean.to_string())
+        return Ok(detected.to_string());
+    }
+
+    match clean {
+        "1" => Ok("codigo".to_string()),
+        "2" => Ok("produto".to_string()),
+        "3" => Ok("design".to_string()),
+        "4" => Ok("ops".to_string()),
+        "5" => Ok("admin".to_string()),
+        "6" => Ok("app-nexus".to_string()),
+        other => Ok(other.to_lowercase()),
     }
 }
 
