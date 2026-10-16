@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 (2026-10-16)
+
+- `etus trabalho` grava `**/.claude/settings.local.json` no `.git/info/exclude` também quando o projeto fica numa pasta que é link (no macOS, `/var` aponta para `/private/var`). Antes, o caminho do arquivo que ainda não existia era comparado sem resolver a pasta e o exclude era pulado.
+
 ## 0.6.0 (2026-10-16)
 
 Configuração nativa do Claude Code para o AI Router da Etus (OmniRoute) e rastreamento de trabalho integrado.
