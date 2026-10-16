@@ -138,6 +138,32 @@ pub enum Commands {
         )]
         interativo: bool,
     },
+    #[command(
+        visible_alias = "activate",
+        about = "Ativa apps, um pacote de apps ou um agente neste projeto: skills e subagente na pasta do projeto",
+        long_about = "Ativa neste projeto só os apps que importam, em vez das skills globais de todos os apps.\n\nALVO é um app (radar, com os mesmos nomes de `etus apps`), um pacote (a categoria do app no hub, como arbitragem, ou o pacote fixo stalk: radar, personas e clone) ou um agente do Etus Agentes (agente:stalk). Para cada app ativo grava .claude/skills/etus-<app>/SKILL.md (e .agents/skills para o Codex) com os comandos, permissões e o guia do app; para um agente grava .claude/agents/etus-<slug>.md com as instruções dele e ativa os apps das ferramentas dele.\n\nO que está ativo fica em .etus.json (versionável, para o time ter a mesma lista); os arquivos gerados vão para .git/info/exclude, porque dependem da empresa e do acesso de cada pessoa. Sem ALVO, gera de novo tudo o que já está ativo."
+    )]
+    Ativar {
+        #[arg(value_name = "ALVO", help = "app, pacote ou agente:<slug>")]
+        alvos: Vec<String>,
+        #[arg(
+            long,
+            value_enum,
+            value_name = "AGENTE",
+            help = "claude, codex ou todos (padrão: Claude Code, mais Codex se o projeto tem AGENTS.md ou .agents)"
+        )]
+        agente: Option<SkillAgent>,
+    },
+    #[command(
+        visible_alias = "deactivate",
+        about = "Desativa apps, pacotes ou agentes neste projeto e apaga os arquivos gerados para eles"
+    )]
+    Desativar {
+        #[arg(required = true, num_args = 1.., value_name = "ALVO", help = "app, pacote ou agente:<slug>")]
+        alvos: Vec<String>,
+    },
+    #[command(visible_alias = "active", about = "Lista o que está ativo neste projeto")]
+    Ativos,
     #[command(about = "Gera o autocompletar para o shell")]
     Completions {
         #[arg(value_enum, help = "bash, zsh, fish, powershell ou elvish")]
@@ -423,6 +449,13 @@ pub enum SkillsCmd {
         )]
         pasta: Option<PathBuf>,
     },
+    #[command(
+        name = "limpar-globais",
+        visible_alias = "clean-global",
+        about = "Apaga as skills globais geradas por `etus skills sincronizar` (as feitas à mão ficam)",
+        long_about = "Apaga de ~/.claude/skills e ~/.agents/skills as pastas etus-<app> que têm a marca de `etus skills sincronizar`. Skills feitas à mão e a etus-cli ficam. Depois, ative por projeto só o que importa com `etus ativar`."
+    )]
+    LimparGlobais,
 }
 
 pub fn localize(cmd: Command) -> Command {

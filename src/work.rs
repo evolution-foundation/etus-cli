@@ -597,8 +597,15 @@ pub fn inherited_headers(project_dir: &Path) -> String {
     String::new()
 }
 
+const SETTINGS_LOCAL_PATTERN: &str = "**/.claude/settings.local.json";
+
 pub fn ensure_ignored(local_path: &Path, git: &GitContext) -> Result<()> {
-    ensure_ignored_impl(local_path, git, None)
+    ensure_ignored_impl(local_path, git, None, Some(SETTINGS_LOCAL_PATTERN))
+}
+
+/// Adds the path itself (anchored at the repository root) to .git/info/exclude, unless git already ignores or tracks it.
+pub fn ensure_excluded(path: &Path, git: &GitContext) -> Result<()> {
+    ensure_ignored_impl(path, git, None, None)
 }
 
 /// The canonical form of a path that may not exist yet: its nearest existing ancestor resolved, the rest appended.
@@ -619,7 +626,12 @@ fn canonical_or_nearest(path: &Path) -> PathBuf {
     }
 }
 
-fn ensure_ignored_impl(local_path: &Path, git: &GitContext, isolated_home: Option<&Path>) -> Result<()> {
+fn ensure_ignored_impl(
+    local_path: &Path,
+    git: &GitContext,
+    isolated_home: Option<&Path>,
+    pattern: Option<&str>,
+) -> Result<()> {
     let top_canon = fs::canonicalize(&git.top).unwrap_or_else(|_| git.top.clone());
     let path_canon = canonical_or_nearest(local_path);
 
@@ -648,6 +660,24 @@ fn ensure_ignored_impl(local_path: &Path, git: &GitContext, isolated_home: Optio
     if is_ignored {
         return Ok(());
     }
+    let pattern = match pattern {
+        Some(pattern) => pattern.to_string(),
+        None => {
+            let mut tracked_cmd = Command::new("git");
+            tracked_cmd
+                .args(["ls-files", "--", &rel_str])
+                .current_dir(&git.top)
+                .env("GIT_OPTIONAL_LOCKS", "0")
+                .stdin(Stdio::null())
+                .stderr(Stdio::null());
+            let tracked = tracked_cmd.output().map(|o| !o.stdout.is_empty()).unwrap_or(false);
+            if tracked {
+                return Ok(());
+            }
+            let dir_suffix = if local_path.is_dir() { "/" } else { "" };
+            format!("/{}{dir_suffix}", rel_str.trim_end_matches('/'))
+        }
+    };
 
     let mut common_cmd = Command::new("git");
     common_cmd
@@ -672,12 +702,18 @@ fn ensure_ignored_impl(local_path: &Path, git: &GitContext, isolated_home: Optio
     fs::create_dir_all(&info_dir)?;
     let exclude_file = info_dir.join("exclude");
     let current_exclude = fs::read_to_string(&exclude_file).unwrap_or_default();
-    if !current_exclude.contains(".claude/settings.local.json") {
+    let present = if pattern == SETTINGS_LOCAL_PATTERN {
+        current_exclude.contains(".claude/settings.local.json")
+    } else {
+        current_exclude.lines().any(|line| line.trim() == pattern)
+    };
+    if !present {
         let mut new_content = current_exclude;
         if !new_content.ends_with('\n') && !new_content.is_empty() {
             new_content.push('\n');
         }
-        new_content.push_str("**/.claude/settings.local.json\n");
+        new_content.push_str(&pattern);
+        new_content.push('\n');
         write_private(&exclude_file, new_content.as_bytes())?;
     }
     Ok(())
@@ -1454,12 +1490,43 @@ mod tests {
         let git = git_context(&dir).unwrap();
         let fake_home = temp_dir("fake-home");
         let local_path = dir.join(".claude").join("settings.local.json");
-        ensure_ignored_impl(&local_path, &git, Some(&fake_home)).unwrap();
+        ensure_ignored_impl(&local_path, &git, Some(&fake_home), Some(SETTINGS_LOCAL_PATTERN)).unwrap();
 
         let exclude = git.git_dir.join("info").join("exclude");
         assert!(exclude.exists());
         let content = fs::read_to_string(&exclude).unwrap();
         assert!(content.contains("**/.claude/settings.local.json"));
+    }
+
+    #[test]
+    fn ensure_excluded_anchors_the_path_and_skips_tracked_files() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = temp_dir("work-exclude-path");
+        let _ = Command::new("git").args(["init", "-q"]).current_dir(&dir).status();
+        let git = git_context(&dir).unwrap();
+        let fake_home = temp_dir("fake-home-path");
+        let skill = dir.join(".claude").join("skills").join("etus-radar");
+        fs::create_dir_all(&skill).unwrap();
+        let agent = dir.join(".claude").join("agents").join("etus-stalk.md");
+        fs::create_dir_all(agent.parent().unwrap()).unwrap();
+        fs::write(&agent, "x").unwrap();
+        let tracked = dir.join(".claude").join("agents").join("etus-kept.md");
+        fs::write(&tracked, "x").unwrap();
+        let _ = Command::new("git")
+            .args(["add", ".claude/agents/etus-kept.md"])
+            .current_dir(&dir)
+            .status();
+
+        for path in [&skill, &agent, &tracked, &skill] {
+            ensure_ignored_impl(path, &git, Some(&fake_home), None).unwrap();
+        }
+
+        let content = fs::read_to_string(git.git_dir.join("info").join("exclude")).unwrap();
+        assert_eq!(content.matches("/.claude/skills/etus-radar/\n").count(), 1);
+        assert!(content.contains("/.claude/agents/etus-stalk.md\n"));
+        assert!(!content.contains("etus-kept"));
     }
 
     #[test]
