@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 
+use dialoguer::{MultiSelect, Select, theme::ColorfulTheme};
 use serde_json::{Value, json};
 
 use crate::context::Ctx;
@@ -418,83 +418,69 @@ pub fn detect_default_profile(root: &Path) -> &'static str {
 }
 
 fn prompt_profile(detected: &str) -> Result<String> {
-    println!("Perfil de trabalho:");
-    println!("  [1] codigo  [2] produto  [3] design  [4] ops  [5] admin  [6] app-nexus");
-    print!("Escolha [1-6 ou nome, padrão '{detected}']: ");
-    std::io::stdout().flush().map_err(|e| Error::Other(e.to_string()))?;
+    let profiles = ["codigo", "produto", "design", "ops", "admin", "app-nexus"];
+    let default_idx = profiles.iter().position(|&p| p == detected).unwrap_or(0);
 
-    let mut input = String::new();
-    std::io::stdin()
-        .read_line(&mut input)
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Escolha o perfil de trabalho")
+        .default(default_idx)
+        .items(profiles)
+        .interact()
         .map_err(|e| Error::Other(e.to_string()))?;
-    let clean = input.trim();
 
-    if clean.is_empty() {
-        return Ok(detected.to_string());
-    }
-
-    match clean {
-        "1" => Ok("codigo".to_string()),
-        "2" => Ok("produto".to_string()),
-        "3" => Ok("design".to_string()),
-        "4" => Ok("ops".to_string()),
-        "5" => Ok("admin".to_string()),
-        "6" => Ok("app-nexus".to_string()),
-        other => Ok(other.to_lowercase()),
-    }
+    Ok(profiles[selection].to_string())
 }
 
 fn prompt_targets() -> Result<Vec<Target>> {
-    println!("Plataformas de IA:");
-    println!("  [1] Todas (Cursor, Antigravity, Windsurf, Copilot, Codex, Claude Code)");
-    println!("  [2] Cursor  [3] Antigravity  [4] Windsurf  [5] Copilot  [6] Codex  [7] Claude Code");
-    print!("Escolha [1-7 ou vírgulas, padrão 1]: ");
-    std::io::stdout().flush().map_err(|e| Error::Other(e.to_string()))?;
+    let options = [
+        "Todas as plataformas (Universal)",
+        "Cursor (.cursor/rules/etus.mdc)",
+        "Antigravity CLI (GEMINI.md)",
+        "Windsurf Cascade (.windsurfrules)",
+        "GitHub Copilot (.github/copilot-instructions.md)",
+        "Codex / OpenAI (AGENTS.md)",
+        "Claude Code (.claude/settings.json)",
+        "Personalizado (marcar com espaço)...",
+    ];
 
-    let mut input = String::new();
-    std::io::stdin()
-        .read_line(&mut input)
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Escolha as plataformas de IA")
+        .default(0)
+        .items(options)
+        .interact()
         .map_err(|e| Error::Other(e.to_string()))?;
-    let clean = input.trim();
 
-    if clean.is_empty() || clean == "1" || clean.eq_ignore_ascii_case("all") {
-        return Ok(Target::all());
-    }
+    match selection {
+        0 => Ok(Target::all()),
+        1 => Ok(vec![Target::Cursor]),
+        2 => Ok(vec![Target::Antigravity]),
+        3 => Ok(vec![Target::Windsurf]),
+        4 => Ok(vec![Target::Copilot]),
+        5 => Ok(vec![Target::Codex]),
+        6 => Ok(vec![Target::ClaudeCode]),
+        7 => {
+            let targets_list = [
+                ("Cursor (.cursor/rules/etus.mdc)", Target::Cursor),
+                ("Antigravity CLI (GEMINI.md)", Target::Antigravity),
+                ("Windsurf Cascade (.windsurfrules)", Target::Windsurf),
+                ("GitHub Copilot (.github/copilot-instructions.md)", Target::Copilot),
+                ("Codex / OpenAI (AGENTS.md)", Target::Codex),
+                ("Claude Code (.claude/settings.json)", Target::ClaudeCode),
+            ];
+            let labels: Vec<&str> = targets_list.iter().map(|(l, _)| *l).collect();
+            let chosen = MultiSelect::with_theme(&ColorfulTheme::default())
+                .with_prompt("Marque com Espaço e confirme com Enter")
+                .items(&labels)
+                .interact()
+                .map_err(|e| Error::Other(e.to_string()))?;
 
-    let mut out = BTreeSet::new();
-    for part in clean.split(',') {
-        match part.trim() {
-            "1" => return Ok(Target::all()),
-            "2" => {
-                out.insert(Target::Cursor);
-            }
-            "3" => {
-                out.insert(Target::Antigravity);
-            }
-            "4" => {
-                out.insert(Target::Windsurf);
-            }
-            "5" => {
-                out.insert(Target::Copilot);
-            }
-            "6" => {
-                out.insert(Target::Codex);
-            }
-            "7" => {
-                out.insert(Target::ClaudeCode);
-            }
-            other => {
-                if let Some(t) = Target::from_str_lenient(other) {
-                    out.insert(t);
-                }
+            if chosen.is_empty() {
+                Ok(Target::all())
+            } else {
+                Ok(chosen.into_iter().map(|i| targets_list[i].1).collect())
             }
         }
-    }
-
-    if out.is_empty() {
-        Ok(Target::all())
-    } else {
-        Ok(out.into_iter().collect())
+        _ => Ok(Target::all()),
     }
 }
 
