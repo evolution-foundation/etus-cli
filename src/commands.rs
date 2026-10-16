@@ -10,13 +10,14 @@ use crate::action::{self, Action};
 use crate::auth::oauth::{self, AuthorizationRequest};
 use crate::auth::store::{StoreKind, keychain_supported, store_for};
 use crate::catalog::{App, Tool, find_app};
-use crate::cli::{self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, SkillsCmd, Toggle, TrabalhoCmd};
+use crate::cli::{self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, RouterCmd, SkillsCmd, Toggle, TrabalhoCmd};
 use crate::config;
 use crate::confirm::{self, Decision};
 use crate::context::{Ctx, SET_COMPANY_TOOL};
 use crate::error::{EXIT_USAGE, Error, Result};
 use crate::naming::slug;
 use crate::output::{Output, pretty};
+use crate::router;
 use crate::schema;
 use crate::skills;
 use crate::work;
@@ -74,6 +75,20 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
             ConfigCmd::AbrirLinks { valor } => choose_open_actions(ctx, valor),
         },
         Commands::Token { force } => print_token(ctx, force),
+        Commands::Router { acao } => match acao.unwrap_or(RouterCmd::Status) {
+            RouterCmd::Setup(args) => router::setup(
+                ctx,
+                router::RouterSetupOptions {
+                    chave: args.chave,
+                    modelo: args.modelo,
+                    fast_model: args.fast_model,
+                    url: args.url,
+                    no_work_tags: args.no_work_tags,
+                    test: args.test,
+                },
+            ),
+            RouterCmd::Status => router::status(ctx),
+        },
         Commands::Trabalho {
             item,
             fase,
@@ -91,6 +106,9 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
             };
             trabalho(ctx, change, acao)
         }
+        Commands::Hook { raw } => work::run_hook(raw.as_deref(), false),
+        Commands::HookDeferred { raw } => work::run_hook_deferred(raw.as_deref()),
+        Commands::Statusline { raw } => work::run_statusline(raw.as_deref()),
         Commands::External(args) => external(ctx, args),
     }
 }
@@ -817,6 +835,12 @@ fn offer_link(ctx: &Ctx, required: &Action, explicit: bool) {
     }
 }
 
+fn active_company_id(ctx: &Ctx) -> Option<String> {
+    crate::catalog::load_cache(&ctx.settings.paths, &ctx.settings.hub, ctx.settings.perfil.as_deref())
+        .and_then(|cache| cache.company)
+        .map(|company| company.id)
+}
+
 const WORK_VIA: &str = "cli";
 
 fn trabalho(ctx: &Ctx, change: work::Change, action: Option<TrabalhoCmd>) -> Result<()> {
@@ -824,20 +848,49 @@ fn trabalho(ctx: &Ctx, change: work::Change, action: Option<TrabalhoCmd>) -> Res
     let git = work::git_context(&cwd);
     let path = work::state_path(git.as_ref(), work::claude_home().as_deref())?;
     let current = work::load_state(&path);
+    let is_cabecalho = matches!(action, Some(TrabalhoCmd::Cabecalho));
     match action {
-        Some(TrabalhoCmd::Limpar) => work::clear_state(&path)?,
+        Some(TrabalhoCmd::Limpar) => {
+            work::clear_state(&path)?;
+            let _ = work::refresh(&cwd);
+        }
+        Some(TrabalhoCmd::Iniciar {
+            item,
+            fase,
+            etiqueta,
+            projeto,
+            empresa,
+        }) => {
+            let change = work::Change {
+                item,
+                phase: fase,
+                project: projeto,
+                company: empresa,
+                tag: etiqueta,
+            };
+            let active = active_company_id(ctx);
+            work::save_state(&path, &work::apply(&current, &change, active.as_deref())?)?;
+            let _ = work::refresh(&cwd);
+        }
+        Some(TrabalhoCmd::Fase { fase }) => {
+            let change = work::Change {
+                phase: Some(fase),
+                ..work::Change::default()
+            };
+            let active = active_company_id(ctx);
+            work::save_state(&path, &work::apply(&current, &change, active.as_deref())?)?;
+            let _ = work::refresh(&cwd);
+        }
         Some(TrabalhoCmd::Mostrar | TrabalhoCmd::Cabecalho) | None if change.is_empty() => {}
         _ => {
-            let active =
-                crate::catalog::load_cache(&ctx.settings.paths, &ctx.settings.hub, ctx.settings.perfil.as_deref())
-                    .and_then(|cache| cache.company)
-                    .map(|company| company.id);
+            let active = active_company_id(ctx);
             work::save_state(&path, &work::apply(&current, &change, active.as_deref())?)?;
+            let _ = work::refresh(&cwd);
         }
     }
     let state = work::load_state(&path);
     let fields = work::resolve(&state, git.as_ref(), &work::read_mapping(git.as_ref()), WORK_VIA);
-    if matches!(action, Some(TrabalhoCmd::Cabecalho)) {
+    if is_cabecalho {
         ctx.out.print_human(&fields.line(), || json!({"header": fields.line()}));
         return Ok(());
     }

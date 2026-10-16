@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0 (2026-10-16)
+
+Configuração nativa do Claude Code para o AI Router da Etus (OmniRoute) e rastreamento de trabalho integrado.
+
+- `etus router setup` (também `configurar`, `init`): configura o Claude Code em `~/.claude/settings.json` com variáveis de ambiente do OmniRoute (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, modelos `dev-continuo` e `rapido`), hooks de telemetria e statusline nativa da CLI em Rust.
+- Tratamento seguro de chave: suporte a entrada interativa sem eco no terminal via `dialoguer::Password`, mascaramento unicode seguro sem sobreposição de fatias, e resolução que apenas reutiliza tokens existentes se o `ANTHROPIC_BASE_URL` já for o do AI Router.
+- Backups com permissão privada (0600) e retenção automática dos últimos 5 backups (`settings.json.bak.<timestamp>`).
+- Detecção e preservação de statusline personalizada previamente existente do usuário.
+- `etus router status` (também `etus router` sem subcomandos): inspeciona e reporta o status da integração, validando URL do roteador, hooks ativos e statusline.
+- `etus trabalho` atualiza imediatamente `.claude/settings.local.json` no repositório ativo através de `refresh` e assegura exclusão no `.git/info/exclude`.
+- Remoção do alias conflitante `work` em `etus trabalho`, preservando o comando externo do app Etus Work (`etus work`).
+- Adição dos comandos internos (`router`, `roteador`, `ai-router`, `hook`, `hook-deferred`, `statusline`, `token`) à lista de comandos reservados (`BUILTIN_COMMANDS`).
+
 ## 0.5.0 (2026-10-15)
 
 Skills dos seus apps para os agentes.
