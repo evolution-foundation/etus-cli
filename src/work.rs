@@ -601,19 +601,27 @@ pub fn ensure_ignored(local_path: &Path, git: &GitContext) -> Result<()> {
     ensure_ignored_impl(local_path, git, None)
 }
 
+/// The canonical form of a path that may not exist yet: its nearest existing ancestor resolved, the rest appended.
+fn canonical_or_nearest(path: &Path) -> PathBuf {
+    let mut missing = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(canon) = fs::canonicalize(current) {
+            return missing.iter().rev().fold(canon, |acc, part| acc.join(part));
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_owned());
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
 fn ensure_ignored_impl(local_path: &Path, git: &GitContext, isolated_home: Option<&Path>) -> Result<()> {
     let top_canon = fs::canonicalize(&git.top).unwrap_or_else(|_| git.top.clone());
-    let path_canon = fs::canonicalize(local_path).unwrap_or_else(|_| {
-        if let Some(parent) = local_path.parent().and_then(|p| fs::canonicalize(p).ok()) {
-            if let Some(file) = local_path.file_name() {
-                parent.join(file)
-            } else {
-                local_path.to_path_buf()
-            }
-        } else {
-            local_path.to_path_buf()
-        }
-    });
+    let path_canon = canonical_or_nearest(local_path);
 
     let rel = match path_canon.strip_prefix(&top_canon) {
         Ok(rel) => rel.to_path_buf(),
