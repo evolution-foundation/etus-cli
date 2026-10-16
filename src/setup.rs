@@ -554,7 +554,28 @@ pub fn run(ctx: &Ctx, opts: SetupOptions) -> Result<()> {
         })
         .unwrap_or_else(|| "ETUS".to_string());
 
-    let workspace = opts.workspace.unwrap_or_else(|| "etus".to_string());
+    let whoami_data = ctx.whoami().ok();
+    let connected_company = whoami_data.as_ref().and_then(|me| {
+        me.get("activeCompany")
+            .and_then(|c| c.get("name"))
+            .and_then(Value::as_str)
+            .map(|s| s.to_string())
+    });
+    let connected_person = whoami_data.as_ref().and_then(|me| {
+        let p = &me["person"];
+        let name = p.get("name").and_then(Value::as_str).unwrap_or("");
+        let email = p.get("email").and_then(Value::as_str).unwrap_or("");
+        if name.is_empty() {
+            None
+        } else {
+            Some(format!("{name} <{email}>"))
+        }
+    });
+
+    let workspace = opts
+        .workspace
+        .or(connected_company.clone())
+        .unwrap_or_else(|| "etus".to_string());
     let has_codex = targets.contains(&Target::Codex);
 
     let mut generated_files = Vec::new();
@@ -630,13 +651,33 @@ pub fn run(ctx: &Ctx, opts: SetupOptions) -> Result<()> {
     });
 
     if ctx.out.json {
-        println_safe(&summary.to_string());
+        let mut summary_val = summary;
+        if let Some(person) = &connected_person {
+            summary_val["connectedUser"] = json!(person);
+        }
+        if let Some(comp) = &connected_company {
+            summary_val["connectedCompany"] = json!(comp);
+        }
+        println_safe(&summary_val.to_string());
     } else {
+        if let Some(person) = &connected_person {
+            let comp_str = connected_company.as_deref().unwrap_or("ETUS");
+            println_safe(&format!("Conectado ao Hub como {person} (Empresa: {comp_str})"));
+        } else {
+            println_safe(
+                "💡 Dica: Você não está conectado ao Hub. Rode 'etus login' para autenticar com a conta da Etus.",
+            );
+        }
         println_safe(&format!("Setup concluído com perfil '{perfil}' para {projeto}:"));
         for f in &generated_files {
             let file_str = f["file"].as_str().unwrap_or("");
             let status = f["status"].as_str().unwrap_or("");
             println_safe(&format!("  - {file_str} ({status})"));
+        }
+        if connected_company.is_some() {
+            println_safe(
+                "💡 Para sincronizar as ferramentas dos apps da Etus com os agentes, rode: etus skills sync --projeto",
+            );
         }
     }
 
