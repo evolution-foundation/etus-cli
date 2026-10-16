@@ -1,6 +1,8 @@
 use std::fs;
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -568,6 +570,498 @@ fn usage(message: String) -> Error {
     Error::Usage(message)
 }
 
+pub const HEADERS_VAR: &str = "ANTHROPIC_CUSTOM_HEADERS";
+
+pub fn headers_of(settings: &Value) -> Option<String> {
+    settings
+        .get("env")
+        .and_then(|e| e.get(HEADERS_VAR))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+pub fn inherited_headers(project_dir: &Path) -> String {
+    let candidates = [
+        project_dir.join(".claude").join("settings.json"),
+        claude_home().map(|h| h.join("settings.json")).unwrap_or_default(),
+    ];
+    for path in candidates {
+        if let Some(h) = fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|json| headers_of(&json))
+        {
+            return h;
+        }
+    }
+    String::new()
+}
+
+pub fn ensure_ignored(local_path: &Path, git: &GitContext) -> Result<()> {
+    ensure_ignored_impl(local_path, git, None)
+}
+
+fn ensure_ignored_impl(local_path: &Path, git: &GitContext, isolated_home: Option<&Path>) -> Result<()> {
+    let top_canon = fs::canonicalize(&git.top).unwrap_or_else(|_| git.top.clone());
+    let path_canon = fs::canonicalize(local_path).unwrap_or_else(|_| {
+        if let Some(parent) = local_path.parent().and_then(|p| fs::canonicalize(p).ok()) {
+            if let Some(file) = local_path.file_name() {
+                parent.join(file)
+            } else {
+                local_path.to_path_buf()
+            }
+        } else {
+            local_path.to_path_buf()
+        }
+    });
+
+    let rel = match path_canon.strip_prefix(&top_canon) {
+        Ok(rel) => rel.to_path_buf(),
+        Err(_) => match local_path.strip_prefix(&git.top) {
+            Ok(rel) => rel.to_path_buf(),
+            Err(_) => return Ok(()),
+        },
+    };
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+
+    let mut check_cmd = Command::new("git");
+    check_cmd
+        .args(["check-ignore", "-q", "--", &rel_str])
+        .current_dir(&git.top)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(home) = isolated_home {
+        check_cmd.env("HOME", home).env("XDG_CONFIG_HOME", home);
+    }
+
+    let is_ignored = check_cmd.status().map(|s| s.success()).unwrap_or(false);
+    if is_ignored {
+        return Ok(());
+    }
+
+    let mut common_cmd = Command::new("git");
+    common_cmd
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(&git.top)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(home) = isolated_home {
+        common_cmd.env("HOME", home).env("XDG_CONFIG_HOME", home);
+    }
+
+    let common_dir = common_cmd
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| git.top.join(s.trim()))
+        .unwrap_or_else(|| git.git_dir.clone());
+
+    let info_dir = common_dir.join("info");
+    fs::create_dir_all(&info_dir)?;
+    let exclude_file = info_dir.join("exclude");
+    let current_exclude = fs::read_to_string(&exclude_file).unwrap_or_default();
+    if !current_exclude.contains(".claude/settings.local.json") {
+        let mut new_content = current_exclude;
+        if !new_content.ends_with('\n') && !new_content.is_empty() {
+            new_content.push('\n');
+        }
+        new_content.push_str("**/.claude/settings.local.json\n");
+        write_private(&exclude_file, new_content.as_bytes())?;
+    }
+    Ok(())
+}
+
+pub fn write_header(project_dir: &Path, line: &str, git: Option<&GitContext>, create: bool) -> Result<bool> {
+    let local_path = project_dir.join(".claude").join("settings.local.json");
+    let exists = local_path.exists();
+    if !exists && !create {
+        return Ok(false);
+    }
+
+    if let Some(g) = git.filter(|_| exists) {
+        let is_tracked = local_path
+            .strip_prefix(&g.top)
+            .ok()
+            .map(|rel| {
+                let rel_str = rel.to_string_lossy();
+                Command::new("git")
+                    .args(["ls-files", "--", &rel_str])
+                    .current_dir(&g.top)
+                    .env("GIT_OPTIONAL_LOCKS", "0")
+                    .stdin(Stdio::null())
+                    .stderr(Stdio::null())
+                    .output()
+                    .ok()
+                    .map(|o| !o.stdout.is_empty())
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if is_tracked {
+            return Ok(false);
+        }
+    }
+
+    let mut data: Value = if exists {
+        let content = fs::read_to_string(&local_path)?;
+        if content.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(&content).map_err(|e| {
+                Error::Other(format!(
+                    "Configuração {} não é um JSON válido: {e}",
+                    local_path.display()
+                ))
+            })?
+        }
+    } else {
+        json!({})
+    };
+
+    if !data.is_object() {
+        return Err(Error::Other(format!(
+            "{} deveria conter um objeto JSON.",
+            local_path.display()
+        )));
+    }
+
+    let env = match data.get_mut("env") {
+        Some(v) if v.is_object() => v,
+        _ => {
+            data["env"] = json!({});
+            data.get_mut("env").unwrap()
+        }
+    };
+
+    let current = env.get(HEADERS_VAR).and_then(Value::as_str);
+    let base = current
+        .map(str::to_string)
+        .unwrap_or_else(|| inherited_headers(project_dir));
+
+    let header_prefix = format!("{}:", HEADER.to_lowercase());
+    let keep: Vec<&str> = base
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.to_lowercase().starts_with(&header_prefix))
+        .collect();
+
+    let new_value = if keep.is_empty() {
+        line.to_string()
+    } else {
+        format!("{}\n{}", keep.join("\n"), line)
+    };
+
+    if current == Some(&new_value) {
+        return Ok(false);
+    }
+
+    env.as_object_mut()
+        .unwrap()
+        .insert(HEADERS_VAR.to_string(), json!(new_value));
+
+    let formatted = serde_json::to_string_pretty(&data)? + "\n";
+    write_private(&local_path, formatted.as_bytes())?;
+
+    if let Some(g) = git.filter(|_| !exists) {
+        let _ = ensure_ignored(&local_path, g);
+    }
+
+    Ok(true)
+}
+
+pub fn current_header_line(project_dir: &Path) -> String {
+    let local_path = project_dir.join(".claude").join("settings.local.json");
+    let headers = fs::read_to_string(local_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|data| headers_of(&data));
+
+    if let Some(headers) = headers {
+        let prefix = format!("{}:", HEADER.to_lowercase());
+        for line in headers.lines() {
+            let trimmed = line.trim();
+            if trimmed.to_lowercase().starts_with(&prefix) {
+                return trimmed.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+pub fn parse_header_line(line: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let body = match line.split_once(':') {
+        Some((_, b)) => b.trim(),
+        None => line.trim(),
+    };
+    for part in body.split(';') {
+        if let Some((k, v)) = part.split_once('=') {
+            map.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+    map
+}
+
+fn do_run_hook(raw: Option<&str>, deferred: bool) -> Result<()> {
+    let input = match raw {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => {
+            if !std::io::stdin().is_terminal() {
+                let mut buffer = String::new();
+                let _ = std::io::stdin().read_to_string(&mut buffer);
+                buffer
+            } else {
+                String::new()
+            }
+        }
+    };
+
+    let data: Value = if input.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&input).unwrap_or_else(|_| json!({}))
+    };
+
+    let event = data.get("hook_event_name").and_then(Value::as_str).unwrap_or("");
+    let cwd_val = if event == "CwdChanged" {
+        data.get("new_cwd").and_then(Value::as_str)
+    } else {
+        None
+    };
+    let cwd_str = cwd_val
+        .or_else(|| data.get("cwd").and_then(Value::as_str))
+        .unwrap_or("");
+
+    let cwd = if !cwd_str.is_empty() && Path::new(cwd_str).is_dir() {
+        PathBuf::from(cwd_str)
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    };
+
+    let perm_mode = data.get("permission_mode").and_then(Value::as_str);
+
+    let git = git_context(&cwd);
+    let mapping = read_mapping(git.as_ref());
+    let path = state_path(git.as_ref(), claude_home().as_deref())?;
+    let state = load_state(&path);
+    let mut fields = resolve(&state, git.as_ref(), &mapping, "cli");
+    if state.phase.is_none() && perm_mode == Some("plan") {
+        fields.phase = "plan".into();
+    }
+
+    let project_dir = if let Some(d) = std::env::var_os("CLAUDE_PROJECT_DIR").filter(|d| !d.is_empty()) {
+        let p = PathBuf::from(d);
+        if p.is_dir() {
+            p
+        } else if let Some(g) = git.as_ref() {
+            g.top.clone()
+        } else {
+            cwd.clone()
+        }
+    } else if let Some(g) = git.as_ref() {
+        g.top.clone()
+    } else {
+        cwd.clone()
+    };
+
+    let create = fields.source != "none";
+    let local = project_dir.join(".claude").join("settings.local.json");
+
+    if deferred && local.exists() {
+        return Ok(());
+    }
+
+    if event == "SessionStart" && create && !deferred && !local.exists() {
+        spawn_deferred(&input, &project_dir);
+    } else {
+        let _ = write_header(&project_dir, &fields.line(), git.as_ref(), create);
+    }
+
+    if let Some(g) = git
+        .as_ref()
+        .filter(|_| !deferred && matches!(event, "SessionStart" | "CwdChanged" | "FileChanged"))
+    {
+        let head = g.git_dir.join("HEAD");
+        let out = json!({
+        "suppressOutput": true,
+        "hookSpecificOutput": {
+                "hookEventName": event,
+                "watchPaths": [head.display().to_string()]
+            }
+        });
+        let text = serde_json::to_string(&out)?;
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(text.as_bytes());
+        let _ = stdout.flush();
+    }
+
+    Ok(())
+}
+
+fn spawn_deferred(raw: &str, project_dir: &Path) {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe)
+            .arg("hook-deferred")
+            .arg(raw)
+            .env("CLAUDE_PROJECT_DIR", project_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}
+
+pub fn run_hook(raw: Option<&str>, deferred: bool) -> Result<()> {
+    let _ = do_run_hook(raw, deferred);
+    Ok(())
+}
+
+pub fn run_hook_deferred(raw: Option<&str>) -> Result<()> {
+    std::thread::sleep(Duration::from_millis(3000));
+    run_hook(raw, true)
+}
+
+fn do_run_statusline(raw: Option<&str>) -> Result<()> {
+    let input = match raw {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => {
+            if !std::io::stdin().is_terminal() {
+                let mut buffer = String::new();
+                let _ = std::io::stdin().read_to_string(&mut buffer);
+                buffer
+            } else {
+                String::new()
+            }
+        }
+    };
+
+    let data: Value = if input.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&input).unwrap_or_else(|_| json!({}))
+    };
+
+    let ws = data.get("workspace").and_then(Value::as_object);
+    let project_dir_str = ws
+        .and_then(|w| w.get("project_dir"))
+        .and_then(Value::as_str)
+        .or_else(|| data.get("cwd").and_then(Value::as_str));
+
+    let project_dir = match project_dir_str {
+        Some(s) if !s.is_empty() && Path::new(s).is_dir() => PathBuf::from(s),
+        _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+
+    let current = current_header_line(&project_dir);
+    let fields_map = parse_header_line(&current);
+
+    let (issue, plane_project, repo, tag, phase) = if !fields_map.is_empty() {
+        (
+            fields_map.get("i").cloned().unwrap_or_default(),
+            fields_map.get("p").cloned().unwrap_or_default(),
+            fields_map.get("r").cloned().unwrap_or_default(),
+            fields_map.get("t").cloned().unwrap_or_default(),
+            fields_map.get("a").cloned().unwrap_or_default(),
+        )
+    } else {
+        let git = git_context(&project_dir);
+        let path = state_path(git.as_ref(), claude_home().as_deref()).ok();
+        let state = path.map(|p| load_state(&p)).unwrap_or_default();
+        let mapping = read_mapping(git.as_ref());
+        let f = resolve(&state, git.as_ref(), &mapping, "cli");
+        (f.issue, f.plane_project, f.repo, f.tag, f.phase)
+    };
+
+    let model = data
+        .get("model")
+        .and_then(|m| m.get("display_name"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    let mut label = if !issue.is_empty() {
+        issue
+    } else if !plane_project.is_empty() {
+        plane_project
+    } else if let Some((_, r)) = repo.rsplit_once('/') {
+        r.to_string()
+    } else {
+        repo
+    };
+
+    if !tag.is_empty() {
+        if label.is_empty() {
+            label = format!("#{tag}");
+        } else {
+            label = format!("{label} #{tag}");
+        }
+    }
+
+    let work = if !label.is_empty() {
+        if !phase.is_empty() {
+            format!("{label} {phase}")
+        } else {
+            label
+        }
+    } else {
+        "no work tag".to_string()
+    };
+
+    let output = if !model.is_empty() {
+        format!("{model} | {work}")
+    } else {
+        work
+    };
+
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(output.as_bytes());
+    let _ = stdout.flush();
+
+    Ok(())
+}
+
+pub fn run_statusline(raw: Option<&str>) -> Result<()> {
+    let _ = do_run_statusline(raw);
+    Ok(())
+}
+
+pub fn refresh(cwd: &Path) -> Result<()> {
+    let git = git_context(cwd);
+    let mut targets = Vec::new();
+    if let Some(g) = git.as_ref() {
+        targets.push(g.top.clone());
+    }
+    let local_settings = cwd.join(".claude").join("settings.local.json");
+    if local_settings.exists() && !targets.contains(&cwd.to_path_buf()) {
+        targets.push(cwd.to_path_buf());
+    }
+
+    for target in targets {
+        let current = current_header_line(&target);
+        let parsed = parse_header_line(&current);
+        let mode = if parsed.get("a").map(String::as_str) == Some("plan") {
+            Some("plan")
+        } else {
+            None
+        };
+        let mapping = read_mapping(git.as_ref());
+        let path = match state_path(git.as_ref(), claude_home().as_deref()) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let state = load_state(&path);
+        let mut fields = resolve(&state, git.as_ref(), &mapping, "cli");
+        if state.phase.is_none() && mode == Some("plan") {
+            fields.phase = "plan".into();
+        }
+        let create = fields.source != "none";
+        let _ = write_header(&target, &fields.line(), git.as_ref(), create);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -906,5 +1400,122 @@ mod tests {
             f.line(),
             "x-etus-work: v=2;c=org1;ws=etus;r=github.com/etusdigital/bfp;p=ENG;i=ENG-42;a=impl;via=cli;src=branch"
         );
+    }
+
+    #[test]
+    fn write_header_creates_and_updates_settings_local() {
+        let dir = temp_dir("work-header");
+        let line1 = "x-etus-work: v=1;i=ENG-100;a=impl;src=explicit";
+        let created = write_header(&dir, line1, None, true).unwrap();
+        assert!(created);
+
+        let local_path = dir.join(".claude").join("settings.local.json");
+        assert!(local_path.exists());
+        assert_eq!(current_header_line(&dir), line1);
+
+        let map = parse_header_line(&current_header_line(&dir));
+        assert_eq!(map.get("i").map(String::as_str), Some("ENG-100"));
+        assert_eq!(map.get("a").map(String::as_str), Some("impl"));
+
+        // Add a custom non-etus header to simulate user custom headers
+        let mut data: Value = serde_json::from_str(&fs::read_to_string(&local_path).unwrap()).unwrap();
+        data["env"]["ANTHROPIC_CUSTOM_HEADERS"] = json!(format!("x-custom-foo: bar\n{line1}"));
+        fs::write(&local_path, serde_json::to_string(&data).unwrap()).unwrap();
+
+        // Update with line 2
+        let line2 = "x-etus-work: v=1;i=ENG-200;a=review;src=explicit";
+        let updated = write_header(&dir, line2, None, true).unwrap();
+        assert!(updated);
+
+        let final_text = fs::read_to_string(&local_path).unwrap();
+        let final_data: Value = serde_json::from_str(&final_text).unwrap();
+        let headers = headers_of(&final_data).unwrap();
+        assert!(headers.contains("x-custom-foo: bar"));
+        assert!(headers.contains(line2));
+        assert!(!headers.contains(line1));
+    }
+
+    #[test]
+    fn ensure_ignored_appends_to_git_exclude() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = temp_dir("work-exclude");
+        let _ = Command::new("git").args(["init", "-q"]).current_dir(&dir).status();
+
+        let git = git_context(&dir).unwrap();
+        let fake_home = temp_dir("fake-home");
+        let local_path = dir.join(".claude").join("settings.local.json");
+        ensure_ignored_impl(&local_path, &git, Some(&fake_home)).unwrap();
+
+        let exclude = git.git_dir.join("info").join("exclude");
+        assert!(exclude.exists());
+        let content = fs::read_to_string(&exclude).unwrap();
+        assert!(content.contains("**/.claude/settings.local.json"));
+    }
+
+    #[test]
+    fn write_header_fails_on_corrupt_json() {
+        let dir = temp_dir("corrupt-work");
+        let claude_dir = dir.join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        let local_path = claude_dir.join("settings.local.json");
+        fs::write(&local_path, "{ corrupt json").unwrap();
+
+        let res = write_header(&dir, "x-etus-work: v=1;i=ENG-1", None, false);
+        assert!(res.is_err());
+        // Verify original file was not modified or overwritten
+        assert_eq!(fs::read_to_string(&local_path).unwrap(), "{ corrupt json");
+    }
+
+    #[test]
+    fn refresh_updates_settings_local_json() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = temp_dir("refresh-test");
+        let _ = Command::new("git").args(["init", "-q"]).current_dir(&dir).status();
+        let git = git_context(&dir).unwrap();
+        let state_file = git.git_dir.join(STATE_FILE);
+        let state = WorkState {
+            issue: Some("ENG-999".into()),
+            phase: Some("impl".into()),
+            company: Some("org_x".into()),
+            ..Default::default()
+        };
+        save_state(&state_file, &state).unwrap();
+
+        // Refresh updates settings.local.json
+        refresh(&dir).unwrap();
+
+        let local_path = dir.join(".claude").join("settings.local.json");
+        assert!(local_path.exists());
+        let text = fs::read_to_string(&local_path).unwrap();
+        assert!(text.contains("ENG-999"));
+        assert!(text.contains("org_x"));
+    }
+
+    #[test]
+    fn do_run_hook_handles_event_cleanly() {
+        let dir = temp_dir("hook-test");
+        let raw_payload = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": dir.to_str().unwrap()
+        })
+        .to_string();
+
+        let res = do_run_hook(Some(&raw_payload), false);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn do_run_statusline_handles_json() {
+        let raw_payload = json!({
+            "cwd": "."
+        })
+        .to_string();
+
+        let res = do_run_statusline(Some(&raw_payload));
+        assert!(res.is_ok());
     }
 }

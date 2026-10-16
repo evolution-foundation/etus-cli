@@ -162,6 +162,16 @@ pub enum Commands {
         force: bool,
     },
     #[command(
+        visible_alias = "roteador",
+        visible_alias = "ai-router",
+        about = "Configura o Claude Code para usar o AI Router da Etus",
+        long_about = "Configura o Claude Code para rotear requisições pelo AI Router da Etus (OmniRoute).\n\nSem subcomandos, mostra o status atual da configuração. Use 'etus router setup' para configurar."
+    )]
+    Router {
+        #[command(subcommand)]
+        acao: Option<RouterCmd>,
+    },
+    #[command(
         about = "Marca o item do Plane em que você está trabalhando (etiqueta x-etus-work)",
         long_about = "Marca o item do Plane em que você está trabalhando, para o uso de IA ser medido por empresa, projeto e item.\n\nO estado fica no repositório atual (ou na pasta do Claude Code fora de um repositório) até você mudar. Os hooks do instalador do roteador leem esse estado e mandam o header x-etus-work em toda chamada do Claude Code.\n\nSem argumentos, mostra o estado. Só com --fase, --projeto ou --empresa, altera o trabalho já marcado.",
         args_conflicts_with_subcommands = true
@@ -169,7 +179,12 @@ pub enum Commands {
     Trabalho {
         #[arg(value_name = "ITEM", help = "Chave do item no Plane, por exemplo ENG-123")]
         item: Option<String>,
-        #[arg(long, value_name = "FASE", help = "plan, impl, review ou qa")]
+        #[arg(
+            long,
+            visible_alias = "phase",
+            value_name = "FASE",
+            help = "plan, impl, review ou qa"
+        )]
         fase: Option<String>,
         #[arg(
             long,
@@ -183,22 +198,138 @@ pub enum Commands {
             help = "Id da empresa no hub (padrão: a empresa ativa do etus)"
         )]
         empresa: Option<String>,
-        #[arg(long, value_name = "ETIQUETA", help = "Etiqueta livre, para trabalho fora do Plane")]
+        #[arg(
+            long,
+            visible_alias = "tag",
+            value_name = "ETIQUETA",
+            help = "Etiqueta livre, para trabalho fora do Plane"
+        )]
         etiqueta: Option<String>,
         #[command(subcommand)]
         acao: Option<TrabalhoCmd>,
+    },
+    #[command(hide = true)]
+    Hook {
+        #[arg(value_name = "RAW")]
+        raw: Option<String>,
+    },
+    #[command(hide = true, name = "hook-deferred")]
+    HookDeferred {
+        #[arg(value_name = "RAW")]
+        raw: Option<String>,
+    },
+    #[command(hide = true)]
+    Statusline {
+        #[arg(value_name = "RAW")]
+        raw: Option<String>,
     },
     #[command(external_subcommand)]
     External(Vec<String>),
 }
 
+#[derive(Debug, clap::Args, Clone, PartialEq, Eq)]
+pub struct RouterSetupArgs {
+    #[arg(
+        value_name = "CHAVE",
+        help = "Chave do AI Router (sk-...). Se informada pela linha de comando, pode ficar gravada no histórico da sua shell; se omitida, será solicitada de forma segura sem ecoar na tela."
+    )]
+    pub chave: Option<String>,
+    #[arg(
+        long,
+        visible_alias = "model",
+        value_name = "MODELO",
+        default_value = "dev-continuo",
+        help = "Modelo principal do Claude Code"
+    )]
+    pub modelo: String,
+    #[arg(
+        long = "fast-model",
+        visible_alias = "modelo-rapido",
+        value_name = "MODELO",
+        default_value = "rapido",
+        help = "Modelo para tarefas rápidas e subagentes"
+    )]
+    pub fast_model: String,
+    #[arg(
+        long,
+        visible_alias = "base-url",
+        value_name = "URL",
+        default_value = "https://router.etus.io",
+        help = "URL base do AI Router"
+    )]
+    pub url: String,
+    #[arg(
+        long = "no-work-tags",
+        visible_alias = "sem-etiquetas",
+        help = "Desativa o rastreamento de trabalho (x-etus-work) e statusline"
+    )]
+    pub no_work_tags: bool,
+    #[arg(
+        long,
+        visible_alias = "testar",
+        help = "Testa o acesso executando 'claude -p responda apenas OK'"
+    )]
+    pub test: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RouterCmd {
+    #[command(
+        visible_alias = "configurar",
+        visible_alias = "init",
+        about = "Configura o Claude Code para usar o AI Router"
+    )]
+    Setup(RouterSetupArgs),
+    #[command(
+        visible_alias = "mostrar",
+        about = "Mostra a configuração atual do roteador no Claude Code"
+    )]
+    Status,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum TrabalhoCmd {
-    #[command(about = "Mostra o trabalho marcado e o header que vai sair")]
+    #[command(
+        visible_alias = "start",
+        about = "Inicia ou altera o trabalho atual com o item informado"
+    )]
+    Iniciar {
+        #[arg(value_name = "ITEM", help = "Chave do item no Plane, por exemplo ENG-123")]
+        item: Option<String>,
+        #[arg(
+            long,
+            visible_alias = "phase",
+            value_name = "FASE",
+            help = "plan, impl, review ou qa"
+        )]
+        fase: Option<String>,
+        #[arg(long, visible_alias = "tag", value_name = "ETIQUETA", help = "Etiqueta livre")]
+        etiqueta: Option<String>,
+        #[arg(long, value_name = "PROJETO", help = "hub:<id>, chat:<id> ou rotina:<id>")]
+        projeto: Option<String>,
+        #[arg(long, value_name = "EMPRESA", help = "Id da empresa no hub")]
+        empresa: Option<String>,
+    },
+    #[command(
+        visible_alias = "phase",
+        about = "Altera a fase do trabalho atual (plan, impl, review ou qa)"
+    )]
+    Fase {
+        #[arg(value_name = "FASE", help = "plan, impl, review ou qa")]
+        fase: String,
+    },
+    #[command(visible_alias = "show", about = "Mostra o trabalho marcado e o header que vai sair")]
     Mostrar,
-    #[command(about = "Imprime só a linha x-etus-work, para hooks e scripts")]
+    #[command(
+        visible_alias = "header",
+        about = "Imprime só a linha x-etus-work, para hooks e scripts"
+    )]
     Cabecalho,
-    #[command(about = "Apaga o trabalho marcado (volta ao que o branch disser)")]
+    #[command(
+        visible_alias = "stop",
+        visible_alias = "clear",
+        about = "Apaga o trabalho marcado (volta ao que o branch disser)"
+    )]
     Limpar,
 }
 
@@ -624,6 +755,74 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn router_command_parses_flags_and_subcommands() {
+        let cli = |args: &[&str]| {
+            let m = root_command(None).try_get_matches_from(args).unwrap();
+            <Cli as clap::FromArgMatches>::from_arg_matches(&m).unwrap().command
+        };
+        match cli(&["etus", "router", "setup", "sk-123", "--model", "custom-model"]) {
+            Some(Commands::Router {
+                acao: Some(RouterCmd::Setup(args)),
+            }) => {
+                assert_eq!(args.chave.as_deref(), Some("sk-123"));
+                assert_eq!(args.modelo, "custom-model");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match cli(&["etus", "router"]) {
+            Some(Commands::Router { acao: None }) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        match cli(&["etus", "roteador", "configurar"]) {
+            Some(Commands::Router {
+                acao: Some(RouterCmd::Setup(args)),
+            }) => {
+                assert_eq!(args.chave, None);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match cli(&["etus", "router", "status"]) {
+            Some(Commands::Router {
+                acao: Some(RouterCmd::Status),
+            }) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        match cli(&["etus", "trabalho", "start", "ENG-456", "--phase", "plan"]) {
+            Some(Commands::Trabalho {
+                acao: Some(TrabalhoCmd::Iniciar { item, fase, .. }),
+                ..
+            }) => {
+                assert_eq!(item.as_deref(), Some("ENG-456"));
+                assert_eq!(fase.as_deref(), Some("plan"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match cli(&["etus", "trabalho", "phase", "review"]) {
+            Some(Commands::Trabalho {
+                acao: Some(TrabalhoCmd::Fase { fase }),
+                ..
+            }) => {
+                assert_eq!(fase, "review");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match cli(&["etus", "trabalho", "stop"]) {
+            Some(Commands::Trabalho {
+                acao: Some(TrabalhoCmd::Limpar),
+                ..
+            }) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        // Verify etus work is routed to the external Etus Work app without collision
+        match cli(&["etus", "work", "listar-tarefas"]) {
+            Some(Commands::External(args)) => {
+                assert_eq!(args, vec!["work", "listar-tarefas"]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

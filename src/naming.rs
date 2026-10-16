@@ -11,6 +11,13 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
     "completions",
     "atualizar-cli",
     "config",
+    "token",
+    "router",
+    "roteador",
+    "ai-router",
+    "hook",
+    "hook-deferred",
+    "statusline",
     "trabalho",
     "help",
 ];

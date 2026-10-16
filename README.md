@@ -215,14 +215,20 @@ etus trabalho limpar                          # apaga a marca (volta ao que o br
 ### Como o header chega ao Claude Code
 
 1. O Claude Code manda em toda chamada os headers de `ANTHROPIC_CUSTOM_HEADERS` (um por linha, `Nome: valor`), lidos do `env` dos arquivos de configuração.
-2. O instalador do roteador (tela **Minha chave** do painel) registra hooks do Claude Code em `SessionStart`, `CwdChanged`, `FileChanged` (no `.git/HEAD`) e `UserPromptSubmit`. A cada evento, o hook lê o arquivo de estado acima e reescreve `ANTHROPIC_CUSTOM_HEADERS` em `.claude/settings.local.json` do projeto com a linha `x-etus-work`, mantendo os outros headers que você já tinha.
-3. Por isso `etus trabalho` vale a partir do próximo prompt, sem reiniciar o Claude Code. O roteador remove o header antes de chamar o provedor.
+2. Com o comando `etus router setup`, a CLI configura o Claude Code nativamente, registrando hooks em `SessionStart`, `CwdChanged`, `FileChanged` (no `.git/HEAD`) e `UserPromptSubmit`. A cada evento, o hook lê o arquivo de estado e reescreve `ANTHROPIC_CUSTOM_HEADERS` em `.claude/settings.local.json` do projeto com a linha `x-etus-work`, mantendo os outros headers que você já tinha.
+3. Além disso, comandos como `etus trabalho <item>` atualizam imediatamente o `.claude/settings.local.json` da pasta atual (garantindo também que o arquivo seja ignorado no `.git/info/exclude`), de modo que as alterações passem a valer a partir do próximo prompt sem reiniciar o Claude Code. O roteador remove o header antes de chamar o provedor.
 
-Enquanto o hook do instalador não escrever `v=2`, ele manda o item, a fase e a etiqueta marcados aqui em `v=1`; empresa e projeto aparecem só em `etus trabalho mostrar` e `cabecalho`. Quando o `etus setup` existir, ele assume esses hooks.
+### Configuração do AI Router
 
-### Dois binários `etus`
+```sh
+etus router setup                            # interativo: solicita chave de forma segura
+etus router setup <SUA_CHAVE>                # configura diretamente com a chave
+etus router setup --model dev-continuo       # define modelo principal e rápido
+etus router status                           # inspeciona a configuração atual no Claude Code
+etus router                                  # o mesmo que etus router status
+```
 
-O instalador do roteador põe um utilitário em Python em `~/.local/bin/etus`, e esta CLI costuma ficar em `/usr/local/bin/etus`. Os hooks chamam o utilitário pelo caminho absoluto, então funcionam com qualquer um dos dois primeiro no `PATH`, e os dois leem e gravam o mesmo arquivo de estado. Nesta CLI, `etus work ...` é o app Etus Work; por isso o comando aqui é `etus trabalho` (o `etus work start` do utilitário Python continua funcionando pelo caminho dele).
+Nesta CLI, `etus work ...` faz o dispatch para o app Etus Work; por isso o rastreamento de tarefas usa o comando canônico `etus trabalho`.
 
 ## Configuração
 
