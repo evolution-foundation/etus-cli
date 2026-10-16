@@ -512,6 +512,39 @@ fn prompt_targets() -> Result<Vec<Target>> {
 }
 
 pub fn run(ctx: &Ctx, opts: SetupOptions) -> Result<()> {
+    if ctx.store().load()?.is_none() {
+        return Err(Error::Auth(
+            "Você não está conectado ao Hub da Etus. Rode `etus login` antes de configurar o projeto.".to_string(),
+        ));
+    }
+
+    let whoami_data = match ctx.whoami() {
+        Ok(data) => data,
+        Err(Error::Auth(msg)) => {
+            return Err(Error::Auth(msg));
+        }
+        Err(Error::Network(msg)) => {
+            eprintln!("etus: o hub não respondeu ({msg}); continuando a configuração do projeto.");
+            Value::Null
+        }
+        Err(e) => return Err(e),
+    };
+
+    let connected_company = whoami_data
+        .get("activeCompany")
+        .and_then(|c| c.get("name"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+    let connected_person = whoami_data.get("person").and_then(|p| {
+        let name = p.get("name").and_then(Value::as_str).unwrap_or("");
+        let email = p.get("email").and_then(Value::as_str).unwrap_or("");
+        if name.is_empty() {
+            None
+        } else {
+            Some(format!("{name} <{email}>"))
+        }
+    });
+
     let cwd = std::env::current_dir().map_err(|e| Error::Other(e.to_string()))?;
     let root = work::git_context(&cwd).map(|git| git.top).unwrap_or(cwd.clone());
 
@@ -553,24 +586,6 @@ pub fn run(ctx: &Ctx, opts: SetupOptions) -> Result<()> {
             })
         })
         .unwrap_or_else(|| "ETUS".to_string());
-
-    let whoami_data = ctx.whoami().ok();
-    let connected_company = whoami_data.as_ref().and_then(|me| {
-        me.get("activeCompany")
-            .and_then(|c| c.get("name"))
-            .and_then(Value::as_str)
-            .map(|s| s.to_string())
-    });
-    let connected_person = whoami_data.as_ref().and_then(|me| {
-        let p = &me["person"];
-        let name = p.get("name").and_then(Value::as_str).unwrap_or("");
-        let email = p.get("email").and_then(Value::as_str).unwrap_or("");
-        if name.is_empty() {
-            None
-        } else {
-            Some(format!("{name} <{email}>"))
-        }
-    });
 
     let workspace = opts
         .workspace
@@ -663,10 +678,6 @@ pub fn run(ctx: &Ctx, opts: SetupOptions) -> Result<()> {
         if let Some(person) = &connected_person {
             let comp_str = connected_company.as_deref().unwrap_or("ETUS");
             println_safe(&format!("Conectado ao Hub como {person} (Empresa: {comp_str})"));
-        } else {
-            println_safe(
-                "💡 Dica: Você não está conectado ao Hub. Rode 'etus login' para autenticar com a conta da Etus.",
-            );
         }
         println_safe(&format!("Setup concluído com perfil '{perfil}' para {projeto}:"));
         for f in &generated_files {
@@ -674,11 +685,9 @@ pub fn run(ctx: &Ctx, opts: SetupOptions) -> Result<()> {
             let status = f["status"].as_str().unwrap_or("");
             println_safe(&format!("  - {file_str} ({status})"));
         }
-        if connected_company.is_some() {
-            println_safe(
-                "💡 Para sincronizar as ferramentas dos apps da Etus com os agentes, rode: etus skills sync --projeto",
-            );
-        }
+        println_safe(
+            "💡 Para sincronizar as ferramentas dos apps da Etus com os agentes, rode: etus skills sincronizar --projeto",
+        );
     }
 
     Ok(())
@@ -779,5 +788,33 @@ mod tests {
             "evolution-foundation/etus-skills"
         );
         assert_eq!(parsed["enabledPlugins"]["etus-core@etus"], true);
+    }
+
+    #[test]
+    fn run_fails_if_not_logged_in() {
+        let dir = crate::testutil::temp_dir("setup-auth-test");
+        let paths = crate::config::Paths::at(&dir);
+        let settings = crate::config::Settings::resolve(paths, Some("https://apps.etus.io"), None).unwrap();
+        let ctx = Ctx::new(
+            settings,
+            crate::output::Output {
+                json: true,
+                quiet: true,
+            },
+            true,
+            false,
+        );
+        let opts = SetupOptions {
+            targets: Some(vec![Target::Cursor]),
+            perfil: Some("codigo".into()),
+            projeto: Some("TEST".into()),
+            workspace: Some("etus".into()),
+            force: false,
+            allow_outside: false,
+        };
+        let err = run(&ctx, opts).unwrap_err();
+        assert!(matches!(err, Error::Auth(_)));
+        assert_eq!(err.exit_code(), 3);
+        assert!(err.message().contains("etus login"));
     }
 }
