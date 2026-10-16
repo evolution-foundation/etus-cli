@@ -49,6 +49,7 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
             workspace,
             force,
             allow_outside,
+            interativo,
         } => {
             let targets = match target {
                 Some(t) => Some(crate::setup::parse_targets(Some(&t))?),
@@ -61,6 +62,7 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
                 workspace,
                 force,
                 allow_outside,
+                interativo,
             };
             crate::setup::run(ctx, opts)
         }

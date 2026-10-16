@@ -130,6 +130,13 @@ pub enum Commands {
         force: bool,
         #[arg(long, help = "Permite gravar fora da raiz do projeto")]
         allow_outside: bool,
+        #[arg(
+            short = 'i',
+            long = "interativo",
+            visible_alias = "interactive",
+            help = "Pergunta perfil e plataformas interativamente"
+        )]
+        interativo: bool,
     },
     #[command(about = "Gera o autocompletar para o shell")]
     Completions {

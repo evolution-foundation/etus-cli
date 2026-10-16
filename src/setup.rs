@@ -130,6 +130,7 @@ pub struct SetupOptions {
     pub workspace: Option<String>,
     pub force: bool,
     pub allow_outside: bool,
+    pub interativo: bool,
 }
 
 struct MarkerRange {
@@ -417,7 +418,7 @@ pub fn detect_default_profile(root: &Path) -> &'static str {
 }
 
 fn prompt_profile(detected: &str) -> Result<String> {
-    print!("Perfil detectado: {detected}\nUsar esse perfil? (S/n): ");
+    print!("Perfil de engenharia [{detected}] (Enter para confirmar ou digite outro): ");
     std::io::stdout().flush().map_err(|e| Error::Other(e.to_string()))?;
 
     let mut input = String::new();
@@ -426,41 +427,17 @@ fn prompt_profile(detected: &str) -> Result<String> {
         .map_err(|e| Error::Other(e.to_string()))?;
     let clean = input.trim();
 
-    if clean.is_empty()
-        || clean.eq_ignore_ascii_case("s")
-        || clean.eq_ignore_ascii_case("sim")
-        || clean.eq_ignore_ascii_case("y")
-        || clean.eq_ignore_ascii_case("yes")
-    {
-        return Ok(detected.to_string());
-    }
-
-    println!("\nPerfis disponíveis: codigo, produto, design, ops, admin, app-nexus");
-    print!("Digite o perfil desejado [{detected}]: ");
-    std::io::stdout().flush().map_err(|e| Error::Other(e.to_string()))?;
-
-    let mut custom = String::new();
-    std::io::stdin()
-        .read_line(&mut custom)
-        .map_err(|e| Error::Other(e.to_string()))?;
-    let clean_custom = custom.trim();
-
-    if clean_custom.is_empty() {
+    if clean.is_empty() {
         Ok(detected.to_string())
     } else {
-        Ok(clean_custom.to_string())
+        Ok(clean.to_string())
     }
 }
 
 fn prompt_targets() -> Result<Vec<Target>> {
-    println!("\nEscolha as plataformas de IA que você deseja configurar:");
-    println!("  [1] Universal: todas as plataformas (Cursor, Antigravity, Windsurf, Copilot, Codex, Claude Code)");
-    println!("  [2] Cursor (.cursor/rules/etus.mdc)");
-    println!("  [3] Antigravity CLI (GEMINI.md)");
-    println!("  [4] Windsurf Cascade (.windsurfrules)");
-    println!("  [5] GitHub Copilot (.github/copilot-instructions.md)");
-    println!("  [6] Codex / OpenAI (AGENTS.md)");
-    println!("  [7] Claude Code (.claude/settings.json)");
+    println!("Plataformas de IA:");
+    println!("  [1] Todas (Cursor, Antigravity, Windsurf, Copilot, Codex, Claude Code)");
+    println!("  [2] Cursor  [3] Antigravity  [4] Windsurf  [5] Copilot  [6] Codex  [7] Claude Code");
     print!("Escolha [1-7 ou vírgulas, padrão 1]: ");
     std::io::stdout().flush().map_err(|e| Error::Other(e.to_string()))?;
 
@@ -548,7 +525,8 @@ pub fn run(ctx: &Ctx, opts: SetupOptions) -> Result<()> {
     let cwd = std::env::current_dir().map_err(|e| Error::Other(e.to_string()))?;
     let root = work::git_context(&cwd).map(|git| git.top).unwrap_or(cwd.clone());
 
-    let is_interactive = crate::confirm::interactive() && !ctx.yes && !ctx.dry_run && !ctx.out.json && !ctx.out.quiet;
+    let is_interactive =
+        opts.interativo && crate::confirm::interactive() && !ctx.yes && !ctx.dry_run && !ctx.out.json && !ctx.out.quiet;
 
     let perfil = match opts.perfil {
         Some(p) if !p.trim().is_empty() => p,
@@ -675,19 +653,13 @@ pub fn run(ctx: &Ctx, opts: SetupOptions) -> Result<()> {
         }
         println_safe(&summary_val.to_string());
     } else {
-        if let Some(person) = &connected_person {
-            let comp_str = connected_company.as_deref().unwrap_or("ETUS");
-            println_safe(&format!("Conectado ao Hub como {person} (Empresa: {comp_str})"));
-        }
-        println_safe(&format!("Setup concluído com perfil '{perfil}' para {projeto}:"));
+        println_safe(&format!("✔ Projeto configurado para {workspace} (perfil: {perfil})"));
         for f in &generated_files {
             let file_str = f["file"].as_str().unwrap_or("");
-            let status = f["status"].as_str().unwrap_or("");
-            println_safe(&format!("  - {file_str} ({status})"));
+            println_safe(&format!("  • {file_str}"));
         }
-        println_safe(
-            "💡 Para sincronizar as ferramentas dos apps da Etus com os agentes, rode: etus skills sincronizar --projeto",
-        );
+        println_safe("");
+        println_safe("💡 Próximo passo: etus skills sincronizar --projeto");
     }
 
     Ok(())
@@ -811,6 +783,7 @@ mod tests {
             workspace: Some("etus".into()),
             force: false,
             allow_outside: false,
+            interativo: false,
         };
         let err = run(&ctx, opts).unwrap_err();
         assert!(matches!(err, Error::Auth(_)));
