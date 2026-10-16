@@ -107,8 +107,37 @@ pub enum Commands {
         #[command(subcommand)]
         acao: SkillsCmd,
     },
-    #[command(about = "Prepara esta máquina para os agentes (em breve)")]
-    Setup,
+    #[command(
+        visible_alias = "init",
+        about = "Configura regras de governança e perfis nos agentes do projeto",
+        long_about = "Configura regras de conduta, engenharia e convenções da Etus para múltiplos agentes (Cursor, Antigravity, Windsurf, Copilot, Codex, Claude Code).\n\nInjeta blocos demarcados que preservam o restante do arquivo intacto."
+    )]
+    Setup {
+        #[arg(
+            long,
+            value_name = "TARGETS",
+            value_delimiter = ',',
+            help = "cursor, antigravity, windsurf, copilot, codex, claude-code ou all"
+        )]
+        target: Option<Vec<String>>,
+        #[arg(long, value_name = "PERFIL", help = "codigo, produto, design, ops, admin, app-nexus")]
+        perfil: Option<String>,
+        #[arg(long, value_name = "PROJETO", help = "Chave do projeto no Plane (ex: ENG, EVO)")]
+        projeto: Option<String>,
+        #[arg(long, value_name = "WORKSPACE", help = "Workspace no Plane (padrão etus)")]
+        workspace: Option<String>,
+        #[arg(long, help = "Força sobrescrita/anexação em arquivos existentes sem marcadores")]
+        force: bool,
+        #[arg(long, help = "Permite gravar fora da raiz do projeto")]
+        allow_outside: bool,
+        #[arg(
+            short = 'i',
+            long = "interativo",
+            visible_alias = "interactive",
+            help = "Pergunta perfil e plataformas interativamente"
+        )]
+        interativo: bool,
+    },
     #[command(about = "Gera o autocompletar para o shell")]
     Completions {
         #[arg(value_enum, help = "bash, zsh, fish, powershell ou elvish")]

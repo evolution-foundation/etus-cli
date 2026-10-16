@@ -551,6 +551,52 @@ fn config_chooses_where_the_token_lives() {
     assert_eq!(invalid.status.code(), Some(2));
 }
 
+#[test]
+fn setup_fails_without_login() {
+    let hub = start(token_for("u1"));
+    let dir = temp_dir("setup-no-login");
+    let output = etus(&dir, &hub.url, &["setup", "--target", "cursor"]);
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("login"), "{stderr}");
+}
+
+#[test]
+fn setup_succeeds_with_login() {
+    let token = token_for("u1");
+    let hub = start(token.clone());
+    let dir = temp_dir("setup-logged-in");
+    login_as(&dir, &hub.url, &token);
+    let work_dir = temp_dir("setup-project");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_etus"));
+    command
+        .args([
+            "setup",
+            "--target",
+            "cursor",
+            "--perfil",
+            "codigo",
+            "--projeto",
+            "TEST",
+            "--workspace",
+            "etus",
+        ])
+        .current_dir(&work_dir)
+        .env("ETUS_CONFIG_DIR", &dir)
+        .env("ETUS_HUB_URL", &hub.url)
+        .env("NO_PROXY", "127.0.0.1")
+        .stdin(Stdio::null());
+    let output = command.output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(work_dir.join(".cursor/rules/etus.mdc").exists());
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn keychain_store_fails_fast_without_a_terminal() {
