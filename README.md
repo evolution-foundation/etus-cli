@@ -325,7 +325,25 @@ etus router chave                            # imprime a chave (é um segredo; q
 - **Como o Claude Code lê.** O Claude Code roda o `apiKeyHelper` ao abrir e a cada 5 minutos (padrão do `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`) e manda o valor em `Authorization: Bearer` e em `x-api-key` para o `ANTHROPIC_BASE_URL`. `ANTHROPIC_AUTH_TOKEN` ou `ANTHROPIC_API_KEY` exportados no shell têm prioridade sobre o `apiKeyHelper`; o `etus router status` avisa quando isso acontece. Com o chaveiro no macOS, o `apiKeyHelper` não roda num terminal e falha: use o arquivo.
 - **`etus router chave` imprime um segredo.** Recusa quando a saída é um terminal (`--force` imprime mesmo assim). Não cole a chave em chat, log ou arquivo versionado.
 - **Sem acesso.** Sem a permissão "Usar a IA" do AI Router, o comando mostra o link para pedir acesso no hub e sai com código 5; depois de aprovado, rode de novo.
-- **`etus logout`** revoga a chave deste computador no roteador e apaga a do cofre (uma chave informada à mão só é apagada). O Claude Code volta a usar o roteador depois de `etus login` e `etus router setup`.
+- **`etus logout`** revoga a chave deste computador no roteador e apaga a do cofre (uma chave informada à mão só é apagada). O Claude Code volta a usar o roteador depois de `etus login` e `etus router setup`. Também desliga a saída pela casa.
+
+### Saída pela casa
+
+Para quem o admin escolheu no painel do AI Router, as chamadas à Anthropic da conta Claude dedicada a essa pessoa saem pelo IP de casa dela. O computador abre uma conexão de saída até o roteador e só repassa bytes TLS entre o roteador e a Anthropic: nunca vê o token da conta.
+
+```sh
+etus router setup --saida-casa               # setup normal e liga a saída pela casa neste computador
+etus router saida-casa ligar                 # liga num computador já configurado
+etus router saida-casa status                # agente, estado da conexão e IP de saída visto pela Anthropic
+etus router saida-casa desligar              # para o agente e apaga o arquivo dele
+```
+
+- **Só com a chave pelo login.** A conexão usa a chave deste computador (`sk-etd-...`). Com `--chave` ou `OMNIROUTE_API_KEY` o comando recusa: rode `etus login` e `etus router setup --saida-casa`. Com o chaveiro no macOS também recusa, porque o agente roda sem terminal: use `etus config armazenamento arquivo`.
+- **Um agente do sistema, não um hook.** No macOS, um LaunchAgent do usuário (`~/Library/LaunchAgents/io.etus.saida-casa.plist`); no Linux, um serviço `systemd --user` (`~/.config/systemd/user/etus-saida-casa.service`). Ele fica de pé independente de quantas sessões do Claude Code estão abertas (uma conexão por computador), volta sozinho depois de queda, suspensão ou troca de rede e também atende o chat da Etus no navegador. O hook `SessionStart` só rodaria quando uma sessão abre e precisaria de trava contra duplicatas. Windows ainda não tem suporte.
+- **Lista fechada.** Só `api.anthropic.com`, `console.anthropic.com`, `platform.claude.com` e `claude.ai`, na porta 443. Qualquer outro destino é recusado sem consultar o DNS.
+- **O admin também liga.** Enquanto o admin não liga a saída pela casa para você no painel, o status mostra "aguardando o admin" e o agente tenta de novo a cada 5 minutos.
+- **Estado e log.** `saida-casa.json` e `saida-casa.log` (até 256 KB, depois `saida-casa.log.1`) na pasta de configuração do etus (`~/Library/Application Support/etus` no macOS, `~/.config/etus` no Linux, ou `ETUS_CONFIG_DIR`). Nenhum dos dois guarda a chave.
+- **Para testar.** `etus router tunel` roda o túnel em primeiro plano; `ETUS_HOME_EGRESS_URL` troca o endereço do túnel (por exemplo `ws://127.0.0.1:20140/etus/home-egress`). `ETUS_SAIDA_CASA_AGENT_DIR` troca a pasta do agente e `ETUS_SAIDA_CASA_NO_SERVICE=1` não chama `launchctl` nem `systemctl`.
 
 Nesta CLI, `etus work ...` faz o dispatch para o app Etus Work; por isso o rastreamento de tarefas usa o comando canônico `etus trabalho`.
 

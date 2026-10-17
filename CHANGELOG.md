@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.0 (2026-10-17)
+
+Saída pela casa.
+
+- Para quem o admin escolheu no painel do AI Router, as chamadas à Anthropic da conta Claude dedicada a essa pessoa saem pelo IP de casa dela. O computador abre uma conexão de saída (WebSocket em `wss://<roteador>/etus/home-egress`) e só repassa bytes TLS entre o roteador e a Anthropic: nunca vê o token da conta.
+- `etus router setup --saida-casa` faz o setup normal e liga a saída pela casa neste computador. Precisa da chave deste computador pelo login (`sk-etd-...`): com `--chave` ou `OMNIROUTE_API_KEY`, recusa.
+- `etus router saida-casa ligar`, `desligar` (pode rodar mais de uma vez) e `status` (também `home-egress on|off`). `etus router status` ganha a seção "Saída pela casa": se o agente está instalado e rodando, o estado (conectado, aguardando o admin, chave recusada, roteador sem a função), o IP de saída visto pela Anthropic, quando foi atualizado e o caminho do log.
+- Por que um agente do sistema e não o hook `SessionStart` do Claude Code: o agente fica de pé independente de quantas sessões estão abertas (uma conexão por computador, não uma por sessão), volta sozinho depois de queda, suspensão ou troca de rede, e também atende o chat da Etus no navegador. O hook só rodaria quando uma sessão abre e precisaria de trava contra duplicatas.
+- macOS: LaunchAgent do usuário `~/Library/LaunchAgents/io.etus.saida-casa.plist` (`RunAtLoad`, `KeepAlive`, `ProcessType` Background), ligado com `launchctl bootstrap gui/<uid>`. Linux: `~/.config/systemd/user/etus-saida-casa.service` com `Restart=always`, ligado com `systemctl --user enable --now`. Windows ainda não tem suporte.
+- O agente roda `etus router tunel` (oculto na ajuda): lê a chave do cofre como o `etus router chave`, abre só conexões para `api.anthropic.com`, `console.anthropic.com`, `platform.claude.com` e `claude.ai` na porta 443 (qualquer outro destino é recusado sem consultar DNS), manda ping a cada 25 s, reconecta se nada chegar em 60 s e espera o tempo que o roteador pede em cada recusa.
+- Estado em `saida-casa.json` e log curto em `saida-casa.log` (até 256 KB, depois `saida-casa.log.1`) na pasta de configuração do etus. Nenhum dos dois guarda a chave.
+- `etus logout` também desliga a saída pela casa. `etus router setup` reinicia o agente, se ele estiver instalado, para usar a chave nova.
+
 ## 0.7.0 (2026-10-16)
 
 Apps e agentes ativados por projeto.
