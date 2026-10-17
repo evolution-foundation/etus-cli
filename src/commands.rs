@@ -119,6 +119,7 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
                 },
             ),
             RouterCmd::Status => router::status(ctx),
+            RouterCmd::Chave { force } => crate::router_key::print_key(ctx, force),
         },
         Commands::Trabalho {
             item,
@@ -221,8 +222,19 @@ fn logout(ctx: &Ctx) -> Result<()> {
     }
     store.delete()?;
     ctx.forget_catalog()?;
-    ctx.out
-        .print_human("Desconectado.", || json!({"status": "desconectado"}));
+    let router_key = crate::router_key::forget(ctx).unwrap_or_else(|error| {
+        eprintln!("etus: aviso: não apaguei a chave do AI Router deste computador: {error}");
+        None
+    });
+    let text = if router_key.is_some() {
+        "Desconectado. A chave do AI Router deste computador foi apagada; o Claude Code volta a usar o roteador depois de `etus login` e `etus router setup`."
+    } else {
+        "Desconectado."
+    };
+    ctx.out.print_human(
+        text,
+        || json!({"status": "desconectado", "routerKeyRemoved": router_key.is_some()}),
+    );
     Ok(())
 }
 

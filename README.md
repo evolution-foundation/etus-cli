@@ -310,12 +310,22 @@ etus trabalho limpar                          # apaga a marca (volta ao que o br
 ### Configuração do AI Router
 
 ```sh
-etus router setup                            # interativo: solicita chave de forma segura
-etus router setup <SUA_CHAVE>                # configura diretamente com a chave
+etus login                                   # uma vez por computador
+etus router setup                            # pega a chave deste computador pelo login, sem colar nada
 etus router setup --model dev-continuo       # define modelo principal e rápido
-etus router status                           # inspeciona a configuração atual no Claude Code
+etus router setup <SUA_CHAVE>                # plano B: informa a chave à mão (também OMNIROUTE_API_KEY)
+etus router status                           # inspeciona a configuração atual e a origem da chave
 etus router                                  # o mesmo que etus router status
+etus router chave                            # imprime a chave (é um segredo; quem chama é o Claude Code)
 ```
+
+- **Uma chave por computador.** Sem `--chave`, o `etus router setup` troca a sessão do `etus login` por um token de repasse do hub (60 s, só para o app `router-panel`) e pede ao AI Router uma chave para este computador, com o nome da máquina (`hostname`). A chave aparece no painel do roteador, em Minha chave, e pode ser revogada lá sem afetar os outros computadores. O uso, o orçamento e os limites continuam os da sua chave pessoal: o roteador troca a chave do computador pela sua.
+- **Rodar de novo troca a chave.** Cada `etus router setup` pede uma chave nova e revoga a anterior deste computador (sessões abertas do Claude Code pegam a nova em até 5 minutos).
+- **Sem texto puro.** A chave fica no mesmo lugar do token do login (arquivo 0600 por padrão, ou o chaveiro com `etus config armazenamento chaveiro`). O `~/.claude/settings.json` recebe `"apiKeyHelper": "etus router chave"` e perde o `ANTHROPIC_AUTH_TOKEN` (e o `ANTHROPIC_API_KEY`). Uma chave antiga em texto puro no `settings.json` vai para o cofre quando não há login.
+- **Como o Claude Code lê.** O Claude Code roda o `apiKeyHelper` ao abrir e a cada 5 minutos (padrão do `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`) e manda o valor em `Authorization: Bearer` e em `x-api-key` para o `ANTHROPIC_BASE_URL`. `ANTHROPIC_AUTH_TOKEN` ou `ANTHROPIC_API_KEY` exportados no shell têm prioridade sobre o `apiKeyHelper`; o `etus router status` avisa quando isso acontece. Com o chaveiro no macOS, o `apiKeyHelper` não roda num terminal e falha: use o arquivo.
+- **`etus router chave` imprime um segredo.** Recusa quando a saída é um terminal (`--force` imprime mesmo assim). Não cole a chave em chat, log ou arquivo versionado.
+- **Sem acesso.** Sem a permissão "Usar a IA" do AI Router, o comando mostra o link para pedir acesso no hub e sai com código 5; depois de aprovado, rode de novo.
+- **`etus logout`** revoga a chave deste computador no roteador e apaga a do cofre (uma chave informada à mão só é apagada). O Claude Code volta a usar o roteador depois de `etus login` e `etus router setup`.
 
 Nesta CLI, `etus work ...` faz o dispatch para o app Etus Work; por isso o rastreamento de tarefas usa o comando canônico `etus trabalho`.
 

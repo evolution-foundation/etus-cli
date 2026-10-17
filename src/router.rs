@@ -10,6 +10,7 @@ use crate::cli::RouterSetupArgs;
 use crate::config::write_private;
 use crate::context::Ctx;
 use crate::error::{Error, Result};
+use crate::router_key::{self, Fetch, Origin, RouterKey};
 
 pub const DEFAULT_ROUTER_URL: &str = "https://router.etus.io";
 pub const DEFAULT_MODEL: &str = "dev-continuo";
@@ -235,7 +236,7 @@ pub fn resolve_etus_bin() -> String {
     "etus".to_string()
 }
 
-pub fn configure_env(data: &mut Value, url: &str, token: &str, model: &str, fast_model: &str) {
+pub fn configure_env(data: &mut Value, url: &str, model: &str, fast_model: &str) {
     if !data.is_object() {
         *data = json!({});
     }
@@ -249,7 +250,7 @@ pub fn configure_env(data: &mut Value, url: &str, token: &str, model: &str, fast
 
     let env_obj = env.as_object_mut().unwrap();
     env_obj.insert("ANTHROPIC_BASE_URL".into(), json!(url));
-    env_obj.insert("ANTHROPIC_AUTH_TOKEN".into(), json!(token));
+    env_obj.remove("ANTHROPIC_AUTH_TOKEN");
     env_obj.remove("ANTHROPIC_API_KEY");
     env_obj.insert("ANTHROPIC_MODEL".into(), json!(model));
     env_obj.insert("ANTHROPIC_DEFAULT_OPUS_MODEL".into(), json!(model));
@@ -338,38 +339,78 @@ pub fn configure_statusline(data: &mut Value, work_tags: bool, etus_bin: &str) {
     }
 }
 
-pub fn resolve_token(
-    explicit: Option<String>,
+pub fn key_helper_command(etus_bin: &str) -> String {
+    format!("{etus_bin} router chave")
+}
+
+pub fn is_key_helper(cmd: &str) -> bool {
+    cmd.trim()
+        .strip_suffix("router chave")
+        .is_some_and(|exe| is_etus_command(&format!("{} chave", exe.trim()), "chave"))
+}
+
+pub fn configure_key_helper(data: &mut Value, etus_bin: &str) {
+    data["apiKeyHelper"] = json!(key_helper_command(etus_bin));
+}
+
+pub fn explicit_key(explicit: Option<String>, env_token: Option<String>) -> Option<String> {
+    [explicit, env_token]
+        .into_iter()
+        .flatten()
+        .map(|k| k.trim().to_string())
+        .find(|k| !k.is_empty())
+}
+
+fn prompt_key() -> Result<String> {
+    use dialoguer::Password;
+    eprintln!("Para obter sua chave individual, acesse: https://router.etus.io/admin/my-key\n");
+    match Password::new().with_prompt("Chave do AI Router (sk-...)").interact() {
+        Ok(key) if !key.trim().is_empty() => Ok(key.trim().to_string()),
+        _ => Err(Error::Usage("Chave não informada.".into())),
+    }
+}
+
+const LOGIN_HINT: &str = "Para obter a chave deste computador sem colar nada, entre com `etus login` e rode `etus router setup` de novo. Ou informe a chave: `etus router setup --chave <sk-...>`.";
+
+pub fn resolve_key(
+    ctx: &Ctx,
+    opts: &RouterSetupOptions,
     env_token: Option<String>,
-    existing: Option<&str>,
+    stored: Option<RouterKey>,
+    legacy: Option<String>,
     is_interactive: bool,
-) -> Result<(String, bool)> {
-    if let Some(key) = explicit.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
-        return Ok((key, false));
+) -> Result<(RouterKey, &'static str)> {
+    let manual = |key: String| RouterKey {
+        key,
+        origin: Origin::Manual,
+        router_url: opts.url.clone(),
+        device_id: None,
+        device_name: None,
+    };
+    if let Some(key) = explicit_key(opts.chave.clone(), env_token) {
+        return Ok((manual(key), "informada"));
     }
-
-    if let Some(env_key) = env_token.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
-        return Ok((env_key, false));
+    let (reason, needs_login) = match router_key::obtain(ctx, &opts.url, stored.as_ref()) {
+        Ok(key) => return Ok((key, "obtida pelo login")),
+        Err(Fetch::Failed(error)) => return Err(error),
+        Err(Fetch::NeedsLogin(reason)) => (reason, true),
+        Err(Fetch::Unavailable(reason)) => (reason, false),
+    };
+    if let Some(previous) = stored.filter(|s| s.router_url == opts.url) {
+        return Ok((previous, "mantida"));
     }
-
-    if let Some(token) = existing.map(str::trim).filter(|k| !k.is_empty()) {
-        return Ok((token.to_string(), true));
+    if let Some(token) = legacy.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+        eprintln!("etus: {reason} {LOGIN_HINT}");
+        return Ok((manual(token), "migrada do settings.json"));
     }
-
+    if needs_login {
+        return Err(Error::Auth(format!("{reason} {LOGIN_HINT}")));
+    }
     if is_interactive {
-        use dialoguer::Password;
-        eprintln!("Para obter sua chave individual, acesse: https://router.etus.io/admin/my-key\n");
-        let prompt_res = Password::new().with_prompt("Chave do AI Router (sk-...)").interact();
-        match prompt_res {
-            Ok(key) if !key.trim().is_empty() => return Ok((key.trim().to_string(), false)),
-            _ => return Err(Error::Usage("Chave não informada.".into())),
-        }
+        eprintln!("etus: {reason}");
+        return Ok((manual(prompt_key()?), "digitada"));
     }
-
-    Err(Error::Usage(
-        "Chave do AI Router não informada.\n\nPara obter sua chave, acesse:\n  https://router.etus.io/admin/my-key\n\nDepois execute:\n  etus router setup <SUA_CHAVE>"
-            .into(),
-    ))
+    Err(Error::Usage(format!("{reason}\n\n{LOGIN_HINT}")))
 }
 
 pub fn mask_token(token: &str) -> String {
@@ -487,7 +528,17 @@ pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
 
     let is_interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let env_token = std::env::var("OMNIROUTE_API_KEY").ok();
-    let (token, reused) = resolve_token(opts.chave, env_token, existing_token, is_interactive)?;
+    let vault = router_key::vault(ctx);
+    let stored = vault.load()?;
+    let (key, key_status) = resolve_key(
+        ctx,
+        &opts,
+        env_token,
+        stored,
+        existing_token.map(str::to_string),
+        is_interactive,
+    )?;
+    vault.save(&key)?;
 
     let bak_path = backup_settings(&settings_path)?;
 
@@ -498,15 +549,15 @@ pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
         .is_some_and(|cmd| !is_etus_command(cmd, "statusline"));
 
     let etus_bin = resolve_etus_bin();
-    configure_env(&mut data, &opts.url, &token, &opts.modelo, &opts.fast_model);
+    configure_env(&mut data, &opts.url, &opts.modelo, &opts.fast_model);
+    configure_key_helper(&mut data, &etus_bin);
     configure_hooks(&mut data, !opts.no_work_tags, &etus_bin);
     configure_statusline(&mut data, !opts.no_work_tags, &etus_bin);
 
     let formatted = serde_json::to_string_pretty(&data)? + "\n";
     write_private(&settings_path, formatted.as_bytes())?;
 
-    let masked = mask_token(&token);
-    let key_status = if reused { "mantida" } else { "configurada" };
+    let masked = mask_token(&key.key);
 
     let mut test_result = None;
     if opts.test {
@@ -545,10 +596,13 @@ pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
 
     ctx.out.print_human(
         &format!(
-            "Claude Code configurado com sucesso para o AI Router da Etus!\n\n  Roteador:      {}\n  Chave:         {} ({})\n  Modelo:        {}\n  Rápido:        {}\n  Etiquetas:     {}\n  Statusline:    {}\n  Arquivo:       {}{}{}{}",
+            "Claude Code configurado com sucesso para o AI Router da Etus!\n\n  Roteador:      {}\n  Chave:         {} ({})\n  Origem:        {}\n  Guardada em:   {}\n  Claude Code:   lê a chave com `{}` (apiKeyHelper)\n  Modelo:        {}\n  Rápido:        {}\n  Etiquetas:     {}\n  Statusline:    {}\n  Arquivo:       {}{}{}{}",
             opts.url,
             masked,
             key_status,
+            key.origin_label(),
+            vault.describe(),
+            key_helper_command("etus"),
             opts.modelo,
             opts.fast_model,
             if !opts.no_work_tags {
@@ -582,7 +636,11 @@ pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
                 "configured": true,
                 "url": opts.url,
                 "keyMasked": masked,
-                "keyReused": reused,
+                "keyStatus": key_status,
+                "keyOrigin": key.origin,
+                "deviceName": key.device_name,
+                "keyStore": vault.describe(),
+                "apiKeyHelper": key_helper_command(&etus_bin),
                 "model": opts.modelo,
                 "fastModel": opts.fast_model,
                 "workTags": !opts.no_work_tags,
@@ -663,8 +721,36 @@ pub fn status(ctx: &Ctx) -> Result<()> {
         clean == DEFAULT_ROUTER_URL.trim_end_matches('/') || clean.contains("router.etus.io")
     });
 
-    let configured = is_router_url && token.is_some();
-    let masked_token = token.map(mask_token).unwrap_or_else(|| "-".into());
+    let helper = data.get("apiKeyHelper").and_then(Value::as_str);
+    let helper_ours = helper.is_some_and(is_key_helper);
+    let vault = router_key::vault(ctx);
+    let (stored, vault_error) = if helper_ours {
+        match vault.load() {
+            Ok(stored) => (stored, None),
+            Err(error) => (None, Some(error.message().to_string())),
+        }
+    } else {
+        (None, None)
+    };
+    let (masked_token, key_origin) = match (&stored, token) {
+        (Some(key), _) => (mask_token(&key.key), key.origin_label()),
+        (None, Some(token)) => (
+            mask_token(token),
+            "texto puro no settings.json (antigo: rode `etus router setup`)".into(),
+        ),
+        (None, None) if helper_ours => (
+            "-".into(),
+            vault_error
+                .clone()
+                .unwrap_or_else(|| "nenhuma chave guardada (rode `etus router setup`)".into()),
+        ),
+        (None, None) => ("-".into(), "-".into()),
+    };
+    let configured = is_router_url && (stored.is_some() || token.is_some());
+    let shadowed: Vec<&str> = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
+        .into_iter()
+        .filter(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+        .collect();
 
     let status_desc = if configured {
         "Configurado"
@@ -683,10 +769,18 @@ pub fn status(ctx: &Ctx) -> Result<()> {
     };
 
     let text = format!(
-        "Configuração do AI Router no Claude Code:\n\n  Status:        {}\n  Roteador:      {}\n  Chave:         {}\n  Modelo:        {}\n  Rápido:        {}\n  Hooks:         {}\n  Statusline:    {}\n  Claude Code:   {}\n  Arquivo:       {}",
+        "Configuração do AI Router no Claude Code:\n\n  Status:        {}\n  Roteador:      {}\n  Chave:         {}\n  Origem:        {}\n  Guardada em:   {}\n  Modelo:        {}\n  Rápido:        {}\n  Hooks:         {}\n  Statusline:    {}\n  Claude Code:   {}\n  Arquivo:       {}",
         status_desc,
         base_url.unwrap_or("-"),
         masked_token,
+        key_origin,
+        if stored.is_some() || (helper_ours && token.is_none()) {
+            vault.describe()
+        } else if token.is_some() {
+            settings_path.display().to_string()
+        } else {
+            "-".into()
+        },
         model.unwrap_or("-"),
         fast_model.unwrap_or("-"),
         if has_hooks { "Ativados" } else { "Desativados" },
@@ -697,7 +791,14 @@ pub fn status(ctx: &Ctx) -> Result<()> {
             "Não encontrado no PATH"
         },
         settings_path.display(),
-    );
+    ) + &if shadowed.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nAviso: {} no ambiente do shell tem prioridade sobre a chave do apiKeyHelper. Remova do seu perfil do shell.",
+            shadowed.join(" e ")
+        )
+    };
 
     ctx.out.print_human(&text, || {
         json!({
@@ -705,6 +806,10 @@ pub fn status(ctx: &Ctx) -> Result<()> {
             "status": status_desc,
             "url": base_url,
             "keyMasked": masked_token,
+            "keyOrigin": stored.as_ref().map(|k| json!(k.origin)).unwrap_or_else(|| if token.is_some() { json!("settings") } else { Value::Null }),
+            "deviceName": stored.as_ref().and_then(|k| k.device_name.clone()),
+            "apiKeyHelper": helper,
+            "shadowedBy": shadowed,
             "model": model,
             "fastModel": fast_model,
             "hasHooks": has_hooks,
@@ -805,16 +910,10 @@ mod tests {
                 "CLAUDE_CODE_SUBAGENT_MODEL": "legacy"
             }
         });
-        configure_env(
-            &mut data,
-            "https://router.etus.io",
-            "sk-test-12345678",
-            "dev-continuo",
-            "rapido",
-        );
+        configure_env(&mut data, "https://router.etus.io", "dev-continuo", "rapido");
         let env = data.get("env").unwrap();
         assert_eq!(env.get("ANTHROPIC_BASE_URL").unwrap(), "https://router.etus.io");
-        assert_eq!(env.get("ANTHROPIC_AUTH_TOKEN").unwrap(), "sk-test-12345678");
+        assert!(env.get("ANTHROPIC_AUTH_TOKEN").is_none());
         assert!(env.get("ANTHROPIC_API_KEY").is_none());
         assert_eq!(env.get("ANTHROPIC_MODEL").unwrap(), "dev-continuo");
         assert_eq!(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").unwrap(), "dev-continuo");
@@ -905,7 +1004,7 @@ mod tests {
     }
 
     #[test]
-    fn backup_and_resolve_token_logic() {
+    fn backup_and_explicit_key_logic() {
         let dir = temp_dir("router-test");
         let settings_path = dir.join("settings.json");
         fs::write(&settings_path, "{}").unwrap();
@@ -913,29 +1012,29 @@ mod tests {
         assert!(bak.is_some());
         assert!(bak.unwrap().exists());
 
-        // Existing token reuse
-        let (token, reused) = resolve_token(None, None, Some("sk-existing-token"), false).unwrap();
-        assert_eq!(token, "sk-existing-token");
-        assert!(reused);
+        assert_eq!(
+            explicit_key(Some(" sk-explicit ".into()), Some("sk-env".into())).as_deref(),
+            Some("sk-explicit")
+        );
+        assert_eq!(explicit_key(None, Some("sk-env".into())).as_deref(), Some("sk-env"));
+        assert_eq!(explicit_key(Some("  ".into()), None), None);
+        assert_eq!(explicit_key(None, None), None);
+    }
 
-        // Env token wins over existing
-        let (token, reused) = resolve_token(None, Some("sk-env-token".into()), Some("sk-existing"), false).unwrap();
-        assert_eq!(token, "sk-env-token");
-        assert!(!reused);
-
-        // Explicit token wins over env and existing
-        let (token, reused) = resolve_token(
-            Some("sk-explicit-token".into()),
-            Some("sk-env-token".into()),
-            Some("sk-existing"),
-            false,
-        )
-        .unwrap();
-        assert_eq!(token, "sk-explicit-token");
-        assert!(!reused);
-
-        // Non-interactive missing token fails
-        assert!(resolve_token(None, None, None, false).is_err());
+    #[test]
+    fn key_helper_points_at_etus_and_replaces_the_plain_token() {
+        let mut data = json!({"env": {"ANTHROPIC_AUTH_TOKEN": "sk-old", "ANTHROPIC_API_KEY": "sk-older"}});
+        configure_env(&mut data, "https://router.etus.io", "dev-continuo", "rapido");
+        configure_key_helper(&mut data, "\"/Users/ana b/.local/bin/etus\"");
+        assert!(data["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
+        assert!(data["env"].get("ANTHROPIC_API_KEY").is_none());
+        let helper = data["apiKeyHelper"].as_str().unwrap();
+        assert_eq!(helper, "\"/Users/ana b/.local/bin/etus\" router chave");
+        assert!(is_key_helper(helper));
+        assert!(is_key_helper("etus router chave"));
+        assert!(is_key_helper("C:\\bin\\etus.exe router chave"));
+        assert!(!is_key_helper("vault kv get router chave"));
+        assert!(!is_key_helper("etus router status"));
     }
 
     #[test]

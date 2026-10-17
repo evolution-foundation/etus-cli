@@ -20,6 +20,15 @@ Um setup só, editores completos e contexto mínimo.
 - `etus setup --perfil codigo` não manda mais `?perfil=codigo` ao hub (o perfil do setup não é o perfil de acesso).
 - A checagem de "fora da raiz do projeto" resolve a pasta existente mais próxima, para não recusar arquivo novo em pasta nova quando o projeto está atrás de um link (como `/var` no macOS).
 
+A chave do AI Router pelo login.
+
+- `etus router setup` sem `--chave` pega a chave do AI Router deste computador pela sessão do `etus login`: troca o token do login por um token de repasse do hub para o `router-panel` e pede ao painel do roteador uma chave com o nome da máquina, revogável em Minha chave. Sem permissão "Usar a IA", mostra o link para pedir acesso (código 5).
+- A chave vai para o mesmo cofre do token do login (arquivo 0600 ou chaveiro), nunca para o `settings.json`: o Claude Code passa a lê-la com `"apiKeyHelper": "etus router chave"`, e o `ANTHROPIC_AUTH_TOKEN` em texto puro sai do arquivo (sem login, a chave antiga é levada para o cofre).
+- `etus router chave`: imprime a chave do cofre para o `apiKeyHelper` (é um segredo; recusa num terminal sem `--force`).
+- `--chave` e `OMNIROUTE_API_KEY` continuam como plano B, também guardados no cofre.
+- `etus router status` mostra a origem da chave (login com o nome do computador, informada à mão ou texto puro antigo) e avisa quando `ANTHROPIC_AUTH_TOKEN` ou `ANTHROPIC_API_KEY` do shell passam na frente do `apiKeyHelper`.
+- `etus logout` revoga a chave deste computador no roteador e a apaga do cofre.
+
 ## 0.6.1 (2026-10-16)
 
 - `etus trabalho` grava `**/.claude/settings.local.json` no `.git/info/exclude` também quando o projeto fica numa pasta que é link (no macOS, `/var` aponta para `/private/var`). Antes, o caminho do arquivo que ainda não existia era comparado sem resolver a pasta e o exclude era pulado.

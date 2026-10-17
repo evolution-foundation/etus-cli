@@ -285,7 +285,7 @@ pub enum Commands {
 pub struct RouterSetupArgs {
     #[arg(
         value_name = "CHAVE",
-        help = "Chave do AI Router (sk-...). Se informada pela linha de comando, pode ficar gravada no histórico da sua shell; se omitida, será solicitada de forma segura sem ecoar na tela."
+        help = "Plano B: chave do AI Router (sk-...) informada à mão. Sem ela, a chave deste computador vem pela sessão do `etus login`. Pela linha de comando, pode ficar no histórico da sua shell."
     )]
     pub chave: Option<String>,
     #[arg(
@@ -371,6 +371,15 @@ pub enum RouterCmd {
         about = "Mostra a configuração atual do roteador no Claude Code"
     )]
     Status,
+    #[command(
+        visible_alias = "key",
+        about = "Imprime a chave do AI Router deste computador (é um segredo; usada pelo apiKeyHelper do Claude Code)",
+        long_about = "Imprime no stdout a chave do AI Router guardada neste computador pelo `etus router setup`. O Claude Code roda este comando (apiKeyHelper no settings.json) para ler a chave sem que ela fique em texto puro no arquivo.\n\nATENÇÃO: a chave é um segredo e gasta a sua cota de IA. Não cole em chat, log ou arquivo versionado.\n\nRecusa quando a saída é um terminal, para a chave não ficar visível na tela; use --force para imprimir mesmo assim."
+    )]
+    Chave {
+        #[arg(long, help = "Imprime mesmo quando a saída é um terminal")]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -875,6 +884,12 @@ mod tests {
             }) => {
                 assert_eq!(args.chave, None);
             }
+            other => panic!("unexpected {other:?}"),
+        }
+        match cli(&["etus", "router", "chave", "--force"]) {
+            Some(Commands::Router {
+                acao: Some(RouterCmd::Chave { force: true }),
+            }) => {}
             other => panic!("unexpected {other:?}"),
         }
         match cli(&["etus", "router", "status"]) {
