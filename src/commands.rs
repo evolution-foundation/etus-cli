@@ -11,12 +11,13 @@ use crate::auth::oauth::{self, AuthorizationRequest};
 use crate::auth::store::{StoreKind, keychain_supported, store_for};
 use crate::catalog::{App, Tool, find_app};
 use crate::cli::{
-    self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, RouterCmd, SetupCmd, SkillsCmd, Toggle, TrabalhoCmd,
+    self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, RouterCmd, SaidaCasaCmd, SetupCmd, SkillsCmd, Toggle, TrabalhoCmd,
 };
 use crate::config;
 use crate::confirm::{self, Decision};
 use crate::context::{Ctx, SET_COMPANY_TOOL};
 use crate::error::{EXIT_USAGE, Error, Result};
+use crate::home_egress;
 use crate::naming::slug;
 use crate::output::{Output, pretty};
 use crate::router;
@@ -116,10 +117,17 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
                     url: args.url,
                     no_work_tags: args.no_work_tags,
                     test: args.test,
+                    home_egress: args.saida_casa,
                 },
             ),
             RouterCmd::Status => router::status(ctx),
             RouterCmd::Chave { force } => crate::router_key::print_key(ctx, force),
+            RouterCmd::SaidaCasa { acao } => match acao.unwrap_or(SaidaCasaCmd::Status) {
+                SaidaCasaCmd::Ligar => home_egress::enable(ctx),
+                SaidaCasaCmd::Desligar => home_egress::disable(ctx),
+                SaidaCasaCmd::Status => home_egress::status(ctx),
+            },
+            RouterCmd::Tunel => home_egress::run_tunnel(ctx),
         },
         Commands::Trabalho {
             item,
@@ -222,19 +230,24 @@ fn logout(ctx: &Ctx) -> Result<()> {
     }
     store.delete()?;
     ctx.forget_catalog()?;
+    let home_egress_stopped = home_egress::stop_for_logout(ctx);
     let router_key = crate::router_key::forget(ctx).unwrap_or_else(|error| {
         eprintln!("etus: aviso: não apaguei a chave do AI Router deste computador: {error}");
         None
     });
-    let text = if router_key.is_some() {
-        "Desconectado. A chave do AI Router deste computador foi apagada; o Claude Code volta a usar o roteador depois de `etus login` e `etus router setup`."
+    let mut text = if router_key.is_some() {
+        "Desconectado. A chave do AI Router deste computador foi apagada; o Claude Code volta a usar o roteador depois de `etus login` e `etus router setup`.".to_string()
     } else {
-        "Desconectado."
+        "Desconectado.".to_string()
     };
-    ctx.out.print_human(
-        text,
-        || json!({"status": "desconectado", "routerKeyRemoved": router_key.is_some()}),
-    );
+    if home_egress_stopped {
+        text.push_str(
+            " A saída pela casa foi desligada neste computador (ligue de novo com `etus router setup --saida-casa`).",
+        );
+    }
+    ctx.out.print_human(&text, || {
+        json!({"status": "desconectado", "routerKeyRemoved": router_key.is_some(), "homeEgressStopped": home_egress_stopped})
+    });
     Ok(())
 }
 

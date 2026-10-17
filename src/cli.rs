@@ -324,6 +324,12 @@ pub struct RouterSetupArgs {
         help = "Testa o acesso executando 'claude -p responda apenas OK'"
     )]
     pub test: bool,
+    #[arg(
+        long = "saida-casa",
+        visible_alias = "home-egress",
+        help = "Também liga a saída pela casa neste computador (precisa da chave pelo login, sem --chave)"
+    )]
+    pub saida_casa: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -380,6 +386,37 @@ pub enum RouterCmd {
         #[arg(long, help = "Imprime mesmo quando a saída é um terminal")]
         force: bool,
     },
+    #[command(
+        name = "saida-casa",
+        visible_alias = "home-egress",
+        about = "Liga, desliga ou mostra a saída pela casa (chamadas à Anthropic pelo IP deste computador)",
+        long_about = "Para quem o admin escolheu, as chamadas à Anthropic da conta Claude dedicada saem pelo IP de casa: este computador abre uma conexão de saída até o AI Router e repassa só bytes TLS para a Anthropic (nunca vê o token da conta).\n\nUm agente do sistema (LaunchAgent no macOS, systemd do usuário no Linux) mantém a conexão de pé, uma por computador, e volta sozinho depois de queda, suspensão ou troca de rede.\n\nSem subcomando, mostra o status."
+    )]
+    SaidaCasa {
+        #[command(subcommand)]
+        acao: Option<SaidaCasaCmd>,
+    },
+    #[command(hide = true, alias = "tunnel")]
+    Tunel,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SaidaCasaCmd {
+    #[command(
+        visible_alias = "on",
+        about = "Instala e sobe o agente da saída pela casa neste computador"
+    )]
+    Ligar,
+    #[command(
+        visible_alias = "off",
+        about = "Para o agente e apaga o arquivo dele (pode rodar mais de uma vez)"
+    )]
+    Desligar,
+    #[command(
+        visible_alias = "mostrar",
+        about = "Mostra se o agente está rodando, o estado da conexão e o IP de saída"
+    )]
+    Status,
 }
 
 #[derive(Debug, Subcommand)]
@@ -898,6 +935,33 @@ mod tests {
             }) => {}
             other => panic!("unexpected {other:?}"),
         }
+        match cli(&["etus", "router", "setup", "--saida-casa"]) {
+            Some(Commands::Router {
+                acao: Some(RouterCmd::Setup(args)),
+            }) => assert!(args.saida_casa && args.chave.is_none()),
+            other => panic!("unexpected {other:?}"),
+        }
+        for (args, expected) in [
+            (vec!["etus", "router", "saida-casa", "ligar"], "Ligar"),
+            (vec!["etus", "router", "home-egress", "off"], "Desligar"),
+            (vec!["etus", "router", "saida-casa"], "None"),
+        ] {
+            match cli(&args) {
+                Some(Commands::Router {
+                    acao: Some(RouterCmd::SaidaCasa { acao }),
+                }) => assert_eq!(
+                    acao.map(|a| format!("{a:?}")).unwrap_or_else(|| "None".into()),
+                    expected
+                ),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert!(matches!(
+            cli(&["etus", "router", "tunel"]),
+            Some(Commands::Router {
+                acao: Some(RouterCmd::Tunel)
+            })
+        ));
         match cli(&["etus", "trabalho", "start", "ENG-456", "--phase", "plan"]) {
             Some(Commands::Trabalho {
                 acao: Some(TrabalhoCmd::Iniciar { item, fase, .. }),

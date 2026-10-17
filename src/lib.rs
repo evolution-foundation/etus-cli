@@ -9,6 +9,7 @@ pub mod confirm;
 pub mod context;
 pub mod editors;
 pub mod error;
+pub mod home_egress;
 pub mod mcp;
 pub mod naming;
 pub mod output;

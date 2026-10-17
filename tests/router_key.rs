@@ -165,6 +165,8 @@ fn etus(dir: &Path, hub: &str, args: &[&str]) -> Output {
         .env("ETUS_CONFIG_DIR", dir)
         .env("ETUS_HUB_URL", hub)
         .env("ETUS_TOKEN_STORE", "file")
+        .env("ETUS_SAIDA_CASA_AGENT_DIR", dir.join("agents"))
+        .env("ETUS_SAIDA_CASA_NO_SERVICE", "1")
         .env("CLAUDE_CONFIG_DIR", dir.join("claude"))
         .env("NO_PROXY", "127.0.0.1")
         .env_remove("OMNIROUTE_API_KEY")

@@ -10,6 +10,7 @@ use crate::cli::RouterSetupArgs;
 use crate::config::write_private;
 use crate::context::Ctx;
 use crate::error::{Error, Result};
+use crate::home_egress;
 use crate::router_key::{self, Fetch, Origin, RouterKey};
 
 pub const DEFAULT_ROUTER_URL: &str = "https://router.etus.io";
@@ -24,6 +25,7 @@ pub struct RouterSetupOptions {
     pub url: String,
     pub no_work_tags: bool,
     pub test: bool,
+    pub home_egress: bool,
 }
 
 impl From<RouterSetupArgs> for RouterSetupOptions {
@@ -35,6 +37,7 @@ impl From<RouterSetupArgs> for RouterSetupOptions {
             url: args.url,
             no_work_tags: args.no_work_tags,
             test: args.test,
+            home_egress: args.saida_casa,
         }
     }
 }
@@ -478,8 +481,14 @@ pub fn run_test_with_timeout(timeout: Duration) -> Result<String> {
     }
 }
 
+const HOME_EGRESS_MANUAL: &str = "A saída pela casa usa a chave deste computador, que vem pelo login. Rode `etus login` e `etus router setup --saida-casa` sem --chave (e sem OMNIROUTE_API_KEY).";
+
 pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
     opts.url = normalize_router_url(&opts.url)?;
+    let env_token = std::env::var("OMNIROUTE_API_KEY").ok();
+    if opts.home_egress && explicit_key(opts.chave.clone(), env_token.clone()).is_some() {
+        return Err(Error::Usage(HOME_EGRESS_MANUAL.into()));
+    }
 
     let settings_path = claude_settings_path()?;
     if let Some(parent) = settings_path.parent() {
@@ -527,7 +536,6 @@ pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
     };
 
     let is_interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
-    let env_token = std::env::var("OMNIROUTE_API_KEY").ok();
     let vault = router_key::vault(ctx);
     let stored = vault.load()?;
     let (key, key_status) = resolve_key(
@@ -538,6 +546,11 @@ pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
         existing_token.map(str::to_string),
         is_interactive,
     )?;
+    if opts.home_egress && home_egress::usable_key(Some(key.clone())).is_err() {
+        return Err(Error::Usage(format!(
+            "A chave do AI Router não veio pelo login ({key_status}). {HOME_EGRESS_MANUAL}"
+        )));
+    }
     vault.save(&key)?;
 
     let bak_path = backup_settings(&settings_path)?;
@@ -556,6 +569,19 @@ pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
 
     let formatted = serde_json::to_string_pretty(&data)? + "\n";
     write_private(&settings_path, formatted.as_bytes())?;
+
+    let home_egress_enabled = if opts.home_egress {
+        Some(home_egress::install(ctx, &key).map_err(|error| {
+            Error::Other(format!(
+                "O Claude Code foi configurado em {}, mas a saída pela casa não ligou: {}",
+                settings_path.display(),
+                error.message()
+            ))
+        })?)
+    } else {
+        home_egress::restart_if_installed();
+        None
+    };
 
     let masked = mask_token(&key.key);
 
@@ -595,7 +621,7 @@ pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
     };
 
     ctx.out.print_human(
-        &format!(
+        &(format!(
             "Claude Code configurado com sucesso para o AI Router da Etus!\n\n  Roteador:      {}\n  Chave:         {} ({})\n  Origem:        {}\n  Guardada em:   {}\n  Claude Code:   lê a chave com `{}` (apiKeyHelper)\n  Modelo:        {}\n  Rápido:        {}\n  Etiquetas:     {}\n  Statusline:    {}\n  Arquivo:       {}{}{}{}",
             opts.url,
             masked,
@@ -630,7 +656,14 @@ pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
             } else {
                 "\n\nPara testar o acesso:\n  claude -p \"responda apenas OK\"".to_string()
             }
-        ),
+        ) + &match home_egress_enabled.as_ref() {
+            Some(enabled) => format!(
+                "\n\nSaída pela casa ligada: {} em {}. O admin também precisa ligá-la para você no painel do AI Router; acompanhe com `etus router saida-casa status`.",
+                enabled.kind.label(),
+                enabled.file.display()
+            ),
+            None => String::new(),
+        }),
         || {
             json!({
                 "configured": true,
@@ -649,6 +682,7 @@ pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
                 "backupPath": bak_path.map(|p| p.display().to_string()),
                 "claudeInstalled": claude_installed,
                 "testOutput": test_result,
+                "homeEgress": home_egress_enabled.as_ref().map(home_egress::Enabled::json),
             })
         },
     );
@@ -659,14 +693,17 @@ pub fn setup(ctx: &Ctx, mut opts: RouterSetupOptions) -> Result<()> {
 pub fn status(ctx: &Ctx) -> Result<()> {
     let settings_path = claude_settings_path()?;
     let claude_installed = check_claude_installed();
+    let egress = home_egress::report(ctx);
+    let now = crate::catalog::now_secs();
 
     if !settings_path.exists() {
         ctx.out.print_human(
             &format!(
-                "Claude Code ainda não está configurado para o AI Router.\nArquivo de configurações não encontrado: {}\n\nPara configurar:\n  etus router setup",
-                settings_path.display()
+                "Claude Code ainda não está configurado para o AI Router.\nArquivo de configurações não encontrado: {}\n\nPara configurar:\n  etus router setup\n\n{}",
+                settings_path.display(),
+                egress.text(now)
             ),
-            || json!({ "configured": false, "settingsPath": settings_path.display().to_string() }),
+            || json!({ "configured": false, "settingsPath": settings_path.display().to_string(), "homeEgress": egress.json(now) }),
         );
         return Ok(());
     }
@@ -798,7 +835,8 @@ pub fn status(ctx: &Ctx) -> Result<()> {
             "\n\nAviso: {} no ambiente do shell tem prioridade sobre a chave do apiKeyHelper. Remova do seu perfil do shell.",
             shadowed.join(" e ")
         )
-    };
+    } + "\n\n"
+        + &egress.text(now);
 
     ctx.out.print_human(&text, || {
         json!({
@@ -817,6 +855,7 @@ pub fn status(ctx: &Ctx) -> Result<()> {
             "customStatusline": has_custom_statusline,
             "claudeInstalled": claude_installed,
             "settingsPath": settings_path.display().to_string(),
+            "homeEgress": egress.json(now),
         })
     });
 
