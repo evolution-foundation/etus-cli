@@ -2,6 +2,26 @@
 
 ## Não lançado
 
+Apps e agentes ativados por projeto.
+
+- `etus ativar <alvo>...` (também `activate`): ativa no projeto um app (nomes de `etus apps`), um pacote (a categoria do app no hub, como `arbitragem`, ou o pacote fixo `stalk` com radar, personas e clone) ou um agente do Etus Agentes (`agente:<slug>`). Grava `.claude/skills/etus-<app>/SKILL.md` (e `.agents/skills` para o Codex, com `--agente` ou quando o projeto tem `AGENTS.md` ou `.agents`) com os comandos e o guia do app vindo de `etus_detalhar`; para um agente, `.claude/agents/etus-<slug>.md` com as instruções lidas pelo Extensões e os apps das ferramentas dele. Sem alvo, gera de novo o que já está ativo.
+- O estado fica na chave `active` do `.etus.json` da raiz do projeto (a mesma do `etus setup`), sem mexer nas outras chaves. Os arquivos gerados vão para o `.git/info/exclude`.
+- `etus desativar <alvo>...` (também `deactivate`) e `etus ativos [--json]` (também `active`).
+- `etus skills limpar-globais` (também `clean-global`) apaga só as skills globais com a marca de `etus skills sincronizar`; o `etus ativar` sugere o comando quando elas existem.
+- `etus skills sincronizar` continua igual.
+
+Um setup só, editores completos e contexto mínimo.
+
+- `etus setup` passa a cobrir o que só o `etus-skills setup` (Node) fazia: vários perfis (`etus setup codigo,design`, somados aos do `.etus.json`), plugins de cada perfil vindos do `profiles.json` do etus-skills (antes eram sempre `etus-core` e `etus-dev`), `--com-templates`, detecção do perfil pelos arquivos do projeto, o `.etus.json` gravado (`project`, `workspace`, `perfil`, `targets`, `mcp`), `--target` somando às plataformas gravadas (`--substituir-alvos` troca) e o merge do `.claude/settings.json` que mantém marketplace customizado e plugin desligado.
+- `etus setup sincronizar` (também `sync`) aplica de novo o `.etus.json` sem login; `etus setup diagnosticar` (também `doctor`) confere `.etus.json`, plugins, regras, MCP `etus` e skills ativas e sai com 1 se houver falha.
+- O MCP `etus` vai para cada editor: `.mcp.json` (Claude Code e Copilot), `.cursor/mcp.json`, `.codex/config.toml`, `.gemini/settings.json`, `.agents/mcp_config.json` (Antigravity) e o arquivo do usuário do Windsurf. Modo `quente` por padrão (`--mcp-modo completo|quente|compacto`); um `etus` que já existe só é trocado com `--mcp-modo`, e o setup avisa sobre o `etus` local do Claude Code e sobre o modo completo com o AI Router.
+- `etus ativar` segue as plataformas do `.etus.json`: `.claude/skills` para o Claude Code e `.agents/skills` para Codex, Cursor, Copilot, Windsurf, Gemini CLI e Antigravity.
+- O `setup` sugere `etus skills limpar-globais` quando há skills globais geradas.
+- `etus setup --perfil codigo` não manda mais `?perfil=codigo` ao hub (o perfil do setup não é o perfil de acesso).
+- A checagem de "fora da raiz do projeto" resolve a pasta existente mais próxima, para não recusar arquivo novo em pasta nova quando o projeto está atrás de um link (como `/var` no macOS).
+
+A chave do AI Router pelo login.
+
 - `etus router setup` sem `--chave` pega a chave do AI Router deste computador pela sessão do `etus login`: troca o token do login por um token de repasse do hub para o `router-panel` e pede ao painel do roteador uma chave com o nome da máquina, revogável em Minha chave. Sem permissão "Usar a IA", mostra o link para pedir acesso (código 5).
 - A chave vai para o mesmo cofre do token do login (arquivo 0600 ou chaveiro), nunca para o `settings.json`: o Claude Code passa a lê-la com `"apiKeyHelper": "etus router chave"`, e o `ANTHROPIC_AUTH_TOKEN` em texto puro sai do arquivo (sem login, a chave antiga é levada para o cofre).
 - `etus router chave`: imprime a chave do cofre para o `apiKeyHelper` (é um segredo; recusa num terminal sem `--force`).

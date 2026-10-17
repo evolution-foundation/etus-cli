@@ -1,4 +1,5 @@
 pub mod action;
+pub mod activate;
 pub mod auth;
 pub mod catalog;
 pub mod cli;
@@ -6,6 +7,7 @@ pub mod commands;
 pub mod config;
 pub mod confirm;
 pub mod context;
+pub mod editors;
 pub mod error;
 pub mod mcp;
 pub mod naming;
@@ -14,6 +16,7 @@ pub mod router;
 pub mod router_key;
 pub mod schema;
 pub mod setup;
+pub mod setup_profiles;
 pub mod skills;
 pub mod update;
 pub mod work;
@@ -67,7 +70,7 @@ pub fn run_args(argv: Vec<String>) -> i32 {
         json: cli.json,
         quiet: cli.quiet,
     };
-    let settings = match early {
+    let mut settings = match early {
         Ok(settings) => settings,
         Err(error) => {
             out.error(&error);
@@ -78,6 +81,9 @@ pub fn run_args(argv: Vec<String>) -> i32 {
         let _ = root_command(Some(NO_CATALOG_HELP.to_string())).print_help();
         return error::EXIT_USAGE;
     };
+    if matches!(command, cli::Commands::Setup { .. }) {
+        settings.perfil = settings.file.perfil.clone().filter(|p| !p.trim().is_empty());
+    }
     let ctx = Ctx::new(settings, out, cli.yes, cli.dry_run).with_actions(cli.open, cli.wait);
     match commands::dispatch(&ctx, command) {
         Ok(()) => 0,

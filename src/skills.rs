@@ -9,11 +9,12 @@ use crate::error::Result;
 use crate::schema::{self, Param};
 
 pub const MARKER: &str = "<!-- gerado por etus skills sincronizar: não edite, rode o comando de novo -->";
+pub const ACTIVATE_MARKER: &str = "<!-- gerado por etus ativar: não edite, rode o comando de novo -->";
 pub const RESERVED_SKILL: &str = "etus-cli";
 pub const DETAIL_TOOL: &str = "etus_detalhar";
 pub const DETAIL_BATCH: usize = 10;
 pub const SKILL_FILE: &str = "SKILL.md";
-const SKILL_PREFIX: &str = "etus-";
+pub const SKILL_PREFIX: &str = "etus-";
 const COMPACT_ABOVE: usize = 60;
 const DESCRIPTION_MAX: usize = 600;
 const PURPOSE_MAX: usize = 400;
@@ -92,6 +93,8 @@ pub struct Guide {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AppDetail {
+    pub key: Option<String>,
+    pub category: Option<String>,
     pub description: Option<String>,
     pub guide: Option<Guide>,
     pub permissions: BTreeMap<String, String>,
@@ -181,6 +184,8 @@ pub fn parse_details(payload: &Value) -> BTreeMap<String, AppDetail> {
         details.insert(
             prefix,
             AppDetail {
+                key: app.and_then(|a| a.get("chave")).and_then(text_of),
+                category: app.and_then(|a| a.get("categoria")).and_then(text_of),
                 description: app.and_then(|a| a.get("descricao")).and_then(text_of),
                 guide: entry.get("guia").and_then(parse_guide),
                 permissions,
@@ -211,10 +216,33 @@ fn yaml_quoted(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Generator {
+    Sync,
+    Activate,
+}
+
+impl Generator {
+    pub fn marker(self) -> &'static str {
+        match self {
+            Generator::Sync => MARKER,
+            Generator::Activate => ACTIVATE_MARKER,
+        }
+    }
+
+    pub fn command(self) -> &'static str {
+        match self {
+            Generator::Sync => "etus skills sincronizar",
+            Generator::Activate => "etus ativar",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Origin {
     pub company: Option<String>,
     pub hub_host: String,
+    pub by: Generator,
 }
 
 fn purpose(detail: Option<&AppDetail>) -> Option<String> {
@@ -368,13 +396,14 @@ pub fn render(app: &App, detail: Option<&AppDetail>, apps: &[App], origin: &Orig
         format!("name: {name}"),
         format!("description: {}", yaml_quoted(&description(app, purpose.as_deref()))),
         "---".to_string(),
-        MARKER.to_string(),
+        origin.by.marker().to_string(),
         String::new(),
         format!("# {app_name} pelo etus"),
         String::new(),
         format!(
-            "Gerada para {company} em {}; rode `etus skills sincronizar` depois de trocar de empresa ou ganhar acesso.",
-            origin.hub_host
+            "Gerada para {company} em {}; rode `{}` depois de trocar de empresa ou ganhar acesso.",
+            origin.hub_host,
+            origin.by.command()
         ),
     ];
     if let Some(purpose) = &purpose {
@@ -440,10 +469,13 @@ pub fn render(app: &App, detail: Option<&AppDetail>, apps: &[App], origin: &Orig
             "- `--dry-run` mostra a chamada sem executar, bom para conferir os argumentos antes de pedir o ok.",
             "- Código 5 é ação necessária: mostre à pessoa o link do stderr. Use `--open` ou `--wait` só com ela por perto para clicar.",
             "- Código 3: rode `etus login`. Código 4: sem permissão para o comando; a pessoa pede acesso a um admin no hub.",
-            "- Comando que não existe mais ou parâmetro diferente do daqui: rode `etus atualizar` e `etus skills sincronizar`.",
         ]
         .map(str::to_string),
     );
+    lines.push(format!(
+        "- Comando que não existe mais ou parâmetro diferente do daqui: rode `etus atualizar` e `{}`.",
+        origin.by.command()
+    ));
     let mut text = lines.join("\n");
     text.push('\n');
     text
@@ -481,28 +513,72 @@ enum Existing {
     Owned(String),
 }
 
-fn existing(dir: &Path, name: &str) -> Existing {
-    let folder = dir.join(name);
-    match fs::symlink_metadata(&folder) {
-        Err(_) => return Existing::Missing,
-        Ok(meta) if !meta.is_dir() => return Existing::Foreign,
-        Ok(_) => {}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    SkillFolder,
+    MarkdownFile,
+}
+
+impl Layout {
+    pub fn path(self, dir: &Path, name: &str) -> PathBuf {
+        match self {
+            Layout::SkillFolder => dir.join(name).join(SKILL_FILE),
+            Layout::MarkdownFile => dir.join(format!("{name}.md")),
+        }
     }
-    let file = folder.join(SKILL_FILE);
+
+    fn entry_name(self, file_name: &str) -> Option<String> {
+        match self {
+            Layout::SkillFolder => Some(file_name.to_string()),
+            Layout::MarkdownFile => file_name.strip_suffix(".md").map(str::to_string),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Ownership<'a> {
+    pub layout: Layout,
+    pub update: &'a [&'a str],
+    pub remove: &'a [&'a str],
+}
+
+impl<'a> Ownership<'a> {
+    pub fn folders(markers: &'a [&'a str]) -> Self {
+        Ownership {
+            layout: Layout::SkillFolder,
+            update: markers,
+            remove: markers,
+        }
+    }
+}
+
+fn existing(dir: &Path, name: &str, markers: &[&str], layout: Layout) -> Existing {
+    if layout == Layout::SkillFolder {
+        match fs::symlink_metadata(dir.join(name)) {
+            Err(_) => return Existing::Missing,
+            Ok(meta) if !meta.is_dir() => return Existing::Foreign,
+            Ok(_) => {}
+        }
+    }
+    let file = layout.path(dir, name);
     match fs::symlink_metadata(&file) {
         Err(_) => Existing::Missing,
         Ok(meta) if !meta.is_file() => Existing::Foreign,
         Ok(_) => match fs::read_to_string(&file) {
-            Ok(text) if text.contains(MARKER) => Existing::Owned(text),
+            Ok(text) if markers.iter().any(|m| text.contains(m)) => Existing::Owned(text),
             _ => Existing::Foreign,
         },
     }
 }
 
-pub fn plan(dir: &Path, desired: &BTreeMap<String, String>) -> Plan {
+pub fn plan(dir: &Path, desired: &BTreeMap<String, String>, markers: &[&str]) -> Plan {
+    plan_with(dir, desired, Ownership::folders(markers))
+}
+
+pub fn plan_with(dir: &Path, desired: &BTreeMap<String, String>, own: Ownership) -> Plan {
     let mut plan = Plan::default();
     for (name, content) in desired {
-        match existing(dir, name) {
+        match existing(dir, name, own.update, own.layout) {
             Existing::Missing => plan.create.push(name.clone()),
             Existing::Foreign => plan.skipped.push(name.clone()),
             Existing::Owned(text) if text == *content => plan.unchanged.push(name.clone()),
@@ -512,9 +588,11 @@ pub fn plan(dir: &Path, desired: &BTreeMap<String, String>) -> Plan {
     let mut stale = BTreeSet::new();
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(name) = own.layout.entry_name(&entry.file_name().to_string_lossy()) else {
+                continue;
+            };
             let candidate = name.starts_with(SKILL_PREFIX) && name != RESERVED_SKILL && !desired.contains_key(&name);
-            if candidate && matches!(existing(dir, &name), Existing::Owned(_)) {
+            if candidate && matches!(existing(dir, &name, own.remove, own.layout), Existing::Owned(_)) {
                 stale.insert(name);
             }
         }
@@ -524,17 +602,36 @@ pub fn plan(dir: &Path, desired: &BTreeMap<String, String>) -> Plan {
 }
 
 pub fn apply(dir: &Path, desired: &BTreeMap<String, String>, plan: &Plan) -> Result<()> {
+    apply_with(dir, desired, plan, Layout::SkillFolder)
+}
+
+pub fn apply_with(dir: &Path, desired: &BTreeMap<String, String>, plan: &Plan, layout: Layout) -> Result<()> {
     for name in plan.create.iter().chain(&plan.update) {
-        let folder = dir.join(name);
-        fs::create_dir_all(&folder)?;
-        fs::write(folder.join(SKILL_FILE), &desired[name])?;
+        let file = layout.path(dir, name);
+        if let Some(parent) = file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(file, &desired[name])?;
     }
     for name in &plan.remove {
-        let folder = dir.join(name);
-        fs::remove_file(folder.join(SKILL_FILE))?;
-        let _ = fs::remove_dir(&folder);
+        fs::remove_file(layout.path(dir, name))?;
+        if layout == Layout::SkillFolder {
+            let _ = fs::remove_dir(dir.join(name));
+        }
     }
     Ok(())
+}
+
+pub fn global_dirs(at: &Locations) -> Vec<PathBuf> {
+    target_dirs(SkillAgent::Todos, false, None, at)
+}
+
+pub fn synced_skills(dir: &Path) -> Vec<String> {
+    synced_with(dir, &[MARKER])
+}
+
+pub fn synced_with(dir: &Path, markers: &[&str]) -> Vec<String> {
+    plan(dir, &BTreeMap::new(), markers).remove
 }
 
 #[cfg(test)]
@@ -568,6 +665,7 @@ mod tests {
         Origin {
             company: Some("Etus".into()),
             hub_host: "apps.etus.io".into(),
+            by: Generator::Sync,
         }
     }
 
@@ -593,6 +691,8 @@ mod tests {
         assert_eq!(details.keys().collect::<Vec<_>>(), vec!["tasks"]);
         let tasks = &details["tasks"];
         assert_eq!(tasks.description.as_deref(), Some("Tarefas da empresa."));
+        assert_eq!(tasks.key.as_deref(), Some("nexus-tasks"));
+        assert_eq!(tasks.category, None);
         assert_eq!(tasks.permissions["tasks__create_task"], "tasks.create");
         let guide = tasks.guide.as_ref().unwrap();
         assert_eq!(
@@ -641,10 +741,13 @@ mod tests {
             &Origin {
                 company: None,
                 hub_host: "h".into(),
+                by: Generator::Activate,
             },
         );
         assert!(text.contains("description: \"Use quando a pessoa pedir algo do app Reuniões da plataforma Etus, como Ver reunião. Feito pelo terminal com `etus reunioes`.\""));
-        assert!(text.contains("Gerada para a empresa ativa em h"));
+        assert!(text.contains("Gerada para a empresa ativa em h; rode `etus ativar`"));
+        assert!(text.contains(&format!("---\n{ACTIVATE_MARKER}\n")));
+        assert!(text.contains("rode `etus atualizar` e `etus ativar`."));
         assert!(text.contains("- `ver-reuniao` (também `get-meeting`): One meeting. Leitura.\n"));
         assert!(!text.contains("Permissão"));
         assert!(!text.contains("## Receitas"));
@@ -710,10 +813,10 @@ mod tests {
         let apps = group(&tools());
         let details = parse_details(&detail_payload());
         let wanted = desired(&apps, &details, &origin());
-        let first = plan(&dir, &wanted);
+        let first = plan(&dir, &wanted, &[MARKER]);
         assert_eq!(first.create, vec!["etus-reunioes", "etus-tarefas"]);
         apply(&dir, &wanted, &first).unwrap();
-        let again = plan(&dir, &wanted);
+        let again = plan(&dir, &wanted, &[MARKER]);
         assert_eq!(again.changes(), 0);
         assert_eq!(again.unchanged.len(), 2);
 
@@ -734,7 +837,7 @@ mod tests {
         .unwrap();
         fs::write(dir.join("etus-tarefas").join(SKILL_FILE), "feita à mão\n").unwrap();
 
-        let next = plan(&dir, &wanted);
+        let next = plan(&dir, &wanted, &[MARKER]);
         assert_eq!(next.update, vec!["etus-reunioes"]);
         assert_eq!(next.skipped, vec!["etus-tarefas"]);
         assert_eq!(next.remove, vec!["etus-old"]);
@@ -752,7 +855,7 @@ mod tests {
             wanted["etus-reunioes"]
         );
 
-        let empty = plan(&dir, &BTreeMap::new());
+        let empty = plan(&dir, &BTreeMap::new(), &[MARKER]);
         assert_eq!(empty.remove, vec!["etus-reunioes"]);
     }
 
@@ -763,9 +866,9 @@ mod tests {
         let outside = temp_dir("skills-outside");
         fs::write(outside.join(SKILL_FILE), format!("{MARKER}\n")).unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("etus-linked")).unwrap();
-        let result = plan(&dir, &BTreeMap::new());
+        let result = plan(&dir, &BTreeMap::new(), &[MARKER]);
         assert!(result.remove.is_empty());
         let wanted = BTreeMap::from([("etus-linked".to_string(), "x".to_string())]);
-        assert_eq!(plan(&dir, &wanted).skipped, vec!["etus-linked"]);
+        assert_eq!(plan(&dir, &wanted, &[MARKER]).skipped, vec!["etus-linked"]);
     }
 }

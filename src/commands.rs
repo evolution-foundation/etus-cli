@@ -10,7 +10,9 @@ use crate::action::{self, Action};
 use crate::auth::oauth::{self, AuthorizationRequest};
 use crate::auth::store::{StoreKind, keychain_supported, store_for};
 use crate::catalog::{App, Tool, find_app};
-use crate::cli::{self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, RouterCmd, SkillsCmd, Toggle, TrabalhoCmd};
+use crate::cli::{
+    self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, RouterCmd, SetupCmd, SkillsCmd, Toggle, TrabalhoCmd,
+};
 use crate::config;
 use crate::confirm::{self, Decision};
 use crate::context::{Ctx, SET_COMPANY_TOOL};
@@ -23,7 +25,7 @@ use crate::skills;
 use crate::work;
 
 const SKILLS_SEARCH_TOOL: &str = "extensoes__catalogo_buscar";
-const SKILLS_READ_TOOL: &str = "extensoes__catalogo_ler";
+pub(crate) const SKILLS_READ_TOOL: &str = "extensoes__catalogo_ler";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
@@ -44,29 +46,58 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
         Commands::Atualizar => refresh(ctx),
         Commands::Skills { acao } => skills(ctx, acao),
         Commands::Setup {
+            acao,
+            perfis,
             target,
             perfil,
             projeto,
             workspace,
+            substituir_alvos,
+            com_templates,
+            mcp_modo,
             force,
             allow_outside,
             interativo,
-        } => {
-            let targets = match target {
-                Some(t) => Some(crate::setup::parse_targets(Some(&t))?),
-                None => None,
-            };
-            let opts = crate::setup::SetupOptions {
-                targets,
-                perfil,
-                projeto,
-                workspace,
+        } => match acao {
+            Some(SetupCmd::Sincronizar {
+                mcp_modo,
+                com_templates,
                 force,
                 allow_outside,
-                interativo,
-            };
-            crate::setup::run(ctx, opts)
-        }
+            }) => crate::setup::sync(
+                ctx,
+                crate::setup::SetupOptions {
+                    mcp_modo,
+                    com_templates,
+                    force,
+                    allow_outside,
+                    ..Default::default()
+                },
+            ),
+            Some(SetupCmd::Diagnosticar) => crate::setup::diagnose(ctx),
+            None => {
+                let targets = match target {
+                    Some(t) => Some(crate::setup::parse_targets(Some(&t))?),
+                    None => None,
+                };
+                let opts = crate::setup::SetupOptions {
+                    targets,
+                    replace_targets: substituir_alvos,
+                    perfis: perfis.into_iter().chain(perfil).collect(),
+                    projeto,
+                    workspace,
+                    force,
+                    allow_outside,
+                    interativo,
+                    com_templates,
+                    mcp_modo,
+                };
+                crate::setup::run(ctx, opts)
+            }
+        },
+        Commands::Ativar { alvos, agente } => crate::activate::activate(ctx, &alvos, agente),
+        Commands::Desativar { alvos } => crate::activate::deactivate(ctx, &alvos),
+        Commands::Ativos => crate::activate::show(ctx),
         Commands::Completions { shell } => completions(ctx, shell),
         Commands::AtualizarCli { verificar } => crate::update::run(ctx, verificar),
         Commands::Config { acao } => match acao.unwrap_or(ConfigCmd::Mostrar) {
@@ -431,6 +462,12 @@ fn skills(ctx: &Ctx, action: SkillsCmd) -> Result<()> {
         SkillsCmd::Sincronizar { agente, projeto, pasta } => {
             return sync_skills(ctx, agente, projeto, pasta.as_deref());
         }
+        SkillsCmd::LimparGlobais => {
+            let reports = crate::activate::clean_globals(ctx)?;
+            let text = sync_report_text(&reports, ctx.dry_run);
+            ctx.out.print_human(&text, || sync_report_json(&reports));
+            return Ok(());
+        }
     };
     let (cache, _) = ctx.catalog()?;
     let tool = cache.find_tool(tool_name).cloned().ok_or_else(|| {
@@ -443,7 +480,7 @@ fn skills(ctx: &Ctx, action: SkillsCmd) -> Result<()> {
     execute(ctx, &tool, args, ctx.out, RunFlags::from_ctx(ctx))
 }
 
-fn fetch_details(ctx: &Ctx, apps: &[App]) -> BTreeMap<String, skills::AppDetail> {
+pub(crate) fn fetch_details(ctx: &Ctx, apps: &[App]) -> BTreeMap<String, skills::AppDetail> {
     let names = skills::detail_names(apps);
     let mut details = BTreeMap::new();
     let _ = ctx.with_mcp(|mcp| {
@@ -458,7 +495,7 @@ fn fetch_details(ctx: &Ctx, apps: &[App]) -> BTreeMap<String, skills::AppDetail>
     details
 }
 
-fn skill_locations() -> Result<skills::Locations> {
+pub(crate) fn skill_locations() -> Result<skills::Locations> {
     let base = directories::BaseDirs::new()
         .ok_or_else(|| Error::Other("Não foi possível achar a pasta do usuário.".into()))?;
     let home = base.home_dir().to_path_buf();
@@ -477,12 +514,13 @@ fn sync_skills(ctx: &Ctx, agent: skills::SkillAgent, project: bool, folder: Opti
     let origin = skills::Origin {
         company: cache.company.as_ref().map(|c| c.name.clone()),
         hub_host: skills::hub_host(&ctx.settings.hub),
+        by: skills::Generator::Sync,
     };
     let wanted = skills::desired(&apps, &details, &origin);
     let dirs = skills::target_dirs(agent, project, folder, &skill_locations()?);
     let mut reports = Vec::new();
     for dir in dirs {
-        let plan = skills::plan(&dir, &wanted);
+        let plan = skills::plan(&dir, &wanted, &[skills::MARKER]);
         if !ctx.dry_run {
             skills::apply(&dir, &wanted, &plan)?;
         }

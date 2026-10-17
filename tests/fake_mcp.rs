@@ -568,26 +568,33 @@ fn setup_succeeds_with_login() {
     let dir = temp_dir("setup-logged-in");
     login_as(&dir, &hub.url, &token);
     let work_dir = temp_dir("setup-project");
+    let home = temp_dir("setup-home");
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_etus"));
-    command
-        .args([
-            "setup",
-            "--target",
-            "cursor",
-            "--perfil",
-            "codigo",
-            "--projeto",
-            "TEST",
-            "--workspace",
-            "etus",
-        ])
-        .current_dir(&work_dir)
-        .env("ETUS_CONFIG_DIR", &dir)
-        .env("ETUS_HUB_URL", &hub.url)
-        .env("NO_PROXY", "127.0.0.1")
-        .stdin(Stdio::null());
-    let output = command.output().unwrap();
+    let run = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_etus"));
+        command
+            .args(args)
+            .current_dir(&work_dir)
+            .env("ETUS_CONFIG_DIR", &dir)
+            .env("ETUS_HUB_URL", &hub.url)
+            .env("HOME", &home)
+            .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
+            .env("NO_PROXY", "127.0.0.1")
+            .env_remove("ETUS_SKILLS_PROFILES")
+            .stdin(Stdio::null());
+        command.output().unwrap()
+    };
+    let output = run(&[
+        "setup",
+        "--target",
+        "cursor",
+        "--perfil",
+        "codigo",
+        "--projeto",
+        "test",
+        "--workspace",
+        "etus",
+    ]);
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -595,6 +602,44 @@ fn setup_succeeds_with_login() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(work_dir.join(".cursor/rules/etus.mdc").exists());
+    assert!(
+        !hub.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.target.contains("perfil=")),
+        "the setup profile is not the hub access profile"
+    );
+    let mcp: Value =
+        serde_json::from_str(&std::fs::read_to_string(work_dir.join(".cursor/mcp.json")).unwrap()).unwrap();
+    assert_eq!(mcp["mcpServers"]["etus"]["url"], format!("{}/mcp?modo=quente", hub.url));
+    let state: Value = serde_json::from_str(&std::fs::read_to_string(work_dir.join(".etus.json")).unwrap()).unwrap();
+    assert_eq!(state["project"], "TEST");
+    assert_eq!(state["perfil"], serde_json::json!(["codigo"]));
+    assert_eq!(state["targets"], serde_json::json!(["cursor"]));
+
+    let healthy = run(&["setup", "diagnosticar"]);
+    assert_eq!(healthy.status.code(), Some(0), "{}", stdout(&healthy));
+
+    std::fs::remove_file(work_dir.join(".cursor/rules/etus.mdc")).unwrap();
+    let broken = run(&["setup", "doctor"]);
+    assert_eq!(broken.status.code(), Some(1));
+    assert!(stdout(&broken).contains("FALHA"));
+
+    let synced = run(&["setup", "sincronizar", "--mcp-modo", "compacto"]);
+    assert_eq!(
+        synced.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&synced.stderr)
+    );
+    assert!(work_dir.join(".cursor/rules/etus.mdc").exists());
+    assert!(
+        std::fs::read_to_string(work_dir.join(".cursor/mcp.json"))
+            .unwrap()
+            .contains("modo=compacto")
+    );
+    assert_eq!(run(&["setup", "diagnosticar"]).status.code(), Some(0));
 }
 
 #[cfg(target_os = "macos")]
