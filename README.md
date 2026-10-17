@@ -111,6 +111,7 @@ Ferramentas que alteram dados pedem confirmação no terminal ou `--yes` (sem te
 ## Para agentes
 
 ```sh
+etus ativar radar               # só os apps que importam neste projeto, com o guia de cada um (veja abaixo)
 etus skills sincronizar         # uma skill por app que você usa, na pasta do agente (veja abaixo)
 etus --help                     # apps disponíveis (do cache)
 etus <app> --help               # comandos do app, os que alteram marcados com [altera]
@@ -188,6 +189,31 @@ etus skills sincronizar --json               # {"pastas","criadas","atualizadas"
 - **Só mexe no que gerou.** Atualiza só o que mudou e remove só as pastas `etus-*` com essa linha cujo app saiu da sua lista (perdeu acesso, app removido, outra empresa). Um `SKILL.md` com o mesmo nome feito à mão fica como está e aparece como ignorado. Pastas que são links simbólicos não são seguidas.
 - **Idempotente.** Sem data no conteúdo: rodar de novo sem mudança no hub não grava nada.
 - Rode de novo depois de `etus empresa usar`, de ganhar ou perder acesso a um app, ou quando um app publicar versão nova. Depois de gravar, abra uma conversa nova no agente para ele carregar as skills.
+
+`etus skills limpar-globais` (também `clean-global`) apaga de `~/.claude/skills` e `~/.agents/skills` só as pastas `etus-<app>` com a linha de `etus skills sincronizar`; as feitas à mão e a `etus-cli` ficam. Aceita `--dry-run` e `--json`.
+
+## Ativar apps e agentes por projeto
+
+As skills globais entram em toda sessão, de qualquer projeto. `etus ativar` (também `activate`) põe só o que importa dentro do projeto:
+
+```sh
+etus ativar radar personas          # apps, pelos nomes de `etus apps`
+etus ativar arbitragem              # um pacote: a categoria do app no hub
+etus ativar stalk                   # pacote fixo radar, personas e clone (quando nenhuma categoria do hub tem esse nome)
+etus ativar agente:stalk            # um agente do Etus Agentes e os apps das ferramentas dele
+etus ativar                         # gera de novo tudo o que já está ativo
+etus ativar --agente todos radar    # Claude Code e Codex (padrão: Claude, mais Codex se o projeto tem AGENTS.md ou .agents)
+etus ativos [--json]                # o que está ativo e por quê (também `active`)
+etus desativar arbitragem           # tira e apaga os arquivos gerados (também `deactivate`)
+```
+
+- **Raiz e estado.** A raiz é a do repositório git (ou a pasta atual fora de um), a mesma do `etus setup`. O que está ativo fica na chave `active` do `.etus.json` da raiz (`apps`, `packs`, `agents`); as outras chaves do arquivo ficam como estão. O `.etus.json` é versionável: o time ativa a mesma lista.
+- **App.** Grava `.claude/skills/etus-<app>/SKILL.md` (e `.agents/skills/etus-<app>/SKILL.md` para o Codex) com a mesma geração de `etus skills sincronizar`: comandos, permissões, e o guia do app (para que serve, receitas e cuidados) vindo de `etus_detalhar` com `app:<prefixo>`. App sem guia publicado sai só com os comandos, e o `etus ativar` diz quais.
+- **Pacote.** Uma categoria de apps do hub (`arbitragem`, `produtividade`...), ou o pacote fixo `stalk` (radar, personas e clone) quando nenhuma categoria tem esse nome. A lista de membros é gravada no `.etus.json`.
+- **Agente.** `agente:<slug>` (ou `agent:<slug>`) lê o agente pelo Extensões (`extensoes__catalogo_ler` com `agente:agentes:<slug>`), grava `.claude/agents/etus-<slug>.md` com as instruções dele e ativa os apps dos prefixos das ferramentas dele. Sem acesso, o etus mostra o link da ação necessária (código 5) ou o motivo (código 4).
+- **Arquivos gerados fora do git.** Cada arquivo gerado entra no `.git/info/exclude`, como o `etus trabalho` faz com o `settings.local.json`: o conteúdo depende da empresa ativa e do acesso de cada pessoa, então cada um gera o seu a partir do `.etus.json`. Arquivo que o repositório já versiona fica versionado.
+- **Só mexe no que gerou.** Os arquivos levam a linha `<!-- gerado por etus ativar: não edite, rode o comando de novo -->`. Uma skill de `etus skills sincronizar --projeto` com o mesmo nome é atualizada, mas só as de `etus ativar` são apagadas; as feitas à mão aparecem como ignoradas.
+- **Dica.** Se houver skills globais de `etus skills sincronizar`, o fim do `etus ativar` sugere `etus skills limpar-globais`.
 
 ## Etiqueta de trabalho
 

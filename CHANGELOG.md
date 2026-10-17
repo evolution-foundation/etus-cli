@@ -1,5 +1,15 @@
 # Changelog
 
+## Não lançado
+
+Apps e agentes ativados por projeto.
+
+- `etus ativar <alvo>...` (também `activate`): ativa no projeto um app (nomes de `etus apps`), um pacote (a categoria do app no hub, como `arbitragem`, ou o pacote fixo `stalk` com radar, personas e clone) ou um agente do Etus Agentes (`agente:<slug>`). Grava `.claude/skills/etus-<app>/SKILL.md` (e `.agents/skills` para o Codex, com `--agente` ou quando o projeto tem `AGENTS.md` ou `.agents`) com os comandos e o guia do app vindo de `etus_detalhar`; para um agente, `.claude/agents/etus-<slug>.md` com as instruções lidas pelo Extensões e os apps das ferramentas dele. Sem alvo, gera de novo o que já está ativo.
+- O estado fica na chave `active` do `.etus.json` da raiz do projeto (a mesma do `etus setup`), sem mexer nas outras chaves. Os arquivos gerados vão para o `.git/info/exclude`.
+- `etus desativar <alvo>...` (também `deactivate`) e `etus ativos [--json]` (também `active`).
+- `etus skills limpar-globais` (também `clean-global`) apaga só as skills globais com a marca de `etus skills sincronizar`; o `etus ativar` sugere o comando quando elas existem.
+- `etus skills sincronizar` continua igual.
+
 ## 0.6.1 (2026-10-16)
 
 - `etus trabalho` grava `**/.claude/settings.local.json` no `.git/info/exclude` também quando o projeto fica numa pasta que é link (no macOS, `/var` aponta para `/private/var`). Antes, o caminho do arquivo que ainda não existia era comparado sem resolver a pasta e o exclude era pulado.

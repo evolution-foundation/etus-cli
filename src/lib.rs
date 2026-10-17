@@ -1,4 +1,5 @@
 pub mod action;
+pub mod activate;
 pub mod auth;
 pub mod catalog;
 pub mod cli;
