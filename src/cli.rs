@@ -5,6 +5,7 @@ use clap_complete::Shell;
 
 use crate::auth::store::StoreKind;
 use crate::catalog::{App, AppCommand, Tool};
+use crate::editors::McpMode;
 use crate::schema;
 use crate::skills::SkillAgent;
 
@@ -109,10 +110,18 @@ pub enum Commands {
     },
     #[command(
         visible_alias = "init",
-        about = "Configura regras de governança e perfis nos agentes do projeto",
-        long_about = "Configura regras de conduta, engenharia e convenções da Etus para múltiplos agentes (Cursor, Antigravity, Windsurf, Copilot, Codex, Claude Code).\n\nInjeta blocos demarcados que preservam o restante do arquivo intacto."
+        about = "Configura regras de governança, perfis e o MCP etus nos agentes do projeto",
+        long_about = "Configura regras de conduta, engenharia e convenções da Etus para múltiplos agentes (Cursor, Antigravity, Windsurf, Copilot, Codex, Claude Code).\n\nInjeta blocos demarcados que preservam o restante do arquivo intacto. Liga os plugins dos perfis no .claude/settings.json, grava o MCP etus no arquivo de cada editor (em modo quente por padrão, para não despejar todas as ferramentas em toda sessão) e guarda perfil, plataformas e modo no .etus.json. Um etus já configurado só é trocado com --mcp-modo.\n\nPERFIL soma aos perfis do .etus.json; sem PERFIL nem .etus.json, detecta pelo projeto. --target soma às plataformas do .etus.json (--substituir-alvos troca a lista).",
+        args_conflicts_with_subcommands = true
     )]
     Setup {
+        #[command(subcommand)]
+        acao: Option<SetupCmd>,
+        #[arg(
+            value_name = "PERFIL",
+            help = "codigo, produto, design, ops, admin, app-nexus (vários com vírgula)"
+        )]
+        perfis: Vec<String>,
         #[arg(
             long,
             value_name = "TARGETS",
@@ -120,12 +129,31 @@ pub enum Commands {
             help = "cursor, antigravity, windsurf, copilot, codex, claude-code ou all"
         )]
         target: Option<Vec<String>>,
-        #[arg(long, value_name = "PERFIL", help = "codigo, produto, design, ops, admin, app-nexus")]
+        #[arg(long, value_name = "PERFIL", help = "Mesmo que PERFIL")]
         perfil: Option<String>,
         #[arg(long, value_name = "PROJETO", help = "Chave do projeto no Plane (ex: ENG, EVO)")]
         projeto: Option<String>,
         #[arg(long, value_name = "WORKSPACE", help = "Workspace no Plane (padrão etus)")]
         workspace: Option<String>,
+        #[arg(
+            long = "substituir-alvos",
+            visible_alias = "replace-targets",
+            help = "--target troca as plataformas do .etus.json em vez de somar"
+        )]
+        substituir_alvos: bool,
+        #[arg(
+            long = "com-templates",
+            visible_alias = "with-templates",
+            help = "Liga também os plugins opcionais do perfil (ex.: etus-design-templates)"
+        )]
+        com_templates: bool,
+        #[arg(
+            long = "mcp-modo",
+            value_enum,
+            value_name = "MODO",
+            help = "Ferramentas do MCP etus: quente (padrão), compacto ou completo"
+        )]
+        mcp_modo: Option<McpMode>,
         #[arg(long, help = "Força sobrescrita/anexação em arquivos existentes sem marcadores")]
         force: bool,
         #[arg(long, help = "Permite gravar fora da raiz do projeto")]
@@ -141,7 +169,7 @@ pub enum Commands {
     #[command(
         visible_alias = "activate",
         about = "Ativa apps, um pacote de apps ou um agente neste projeto: skills e subagente na pasta do projeto",
-        long_about = "Ativa neste projeto só os apps que importam, em vez das skills globais de todos os apps.\n\nALVO é um app (radar, com os mesmos nomes de `etus apps`), um pacote (a categoria do app no hub, como arbitragem, ou o pacote fixo stalk: radar, personas e clone) ou um agente do Etus Agentes (agente:stalk). Para cada app ativo grava .claude/skills/etus-<app>/SKILL.md (e .agents/skills para o Codex) com os comandos, permissões e o guia do app; para um agente grava .claude/agents/etus-<slug>.md com as instruções dele e ativa os apps das ferramentas dele.\n\nO que está ativo fica em .etus.json (versionável, para o time ter a mesma lista); os arquivos gerados vão para .git/info/exclude, porque dependem da empresa e do acesso de cada pessoa. Sem ALVO, gera de novo tudo o que já está ativo."
+        long_about = "Ativa neste projeto só os apps que importam, em vez das skills globais de todos os apps.\n\nALVO é um app (radar, com os mesmos nomes de `etus apps`), um pacote (a categoria do app no hub, como arbitragem, ou o pacote fixo stalk: radar, personas e clone) ou um agente do Etus Agentes (agente:stalk). Para cada app ativo grava .claude/skills/etus-<app>/SKILL.md (e .agents/skills, a pasta aberta que Codex, Cursor, Copilot, Windsurf, Gemini CLI e Antigravity leem, quando as plataformas do .etus.json pedem) com os comandos, permissões e o guia do app; para um agente grava .claude/agents/etus-<slug>.md com as instruções dele e ativa os apps das ferramentas dele.\n\nO que está ativo fica em .etus.json (versionável, para o time ter a mesma lista); os arquivos gerados vão para .git/info/exclude, porque dependem da empresa e do acesso de cada pessoa. Sem ALVO, gera de novo tudo o que já está ativo."
     )]
     Ativar {
         #[arg(value_name = "ALVO", help = "app, pacote ou agente:<slug>")]
@@ -150,7 +178,7 @@ pub enum Commands {
             long,
             value_enum,
             value_name = "AGENTE",
-            help = "claude, codex ou todos (padrão: Claude Code, mais Codex se o projeto tem AGENTS.md ou .agents)"
+            help = "claude, codex ou todos (padrão: as plataformas do .etus.json; sem elas, Claude Code, mais .agents/skills se o projeto tem AGENTS.md ou .agents)"
         )]
         agente: Option<SkillAgent>,
     },
@@ -296,6 +324,38 @@ pub struct RouterSetupArgs {
         help = "Testa o acesso executando 'claude -p responda apenas OK'"
     )]
     pub test: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SetupCmd {
+    #[command(
+        visible_alias = "sync",
+        about = "Aplica de novo o .etus.json: plugins, regras e MCP etus de cada plataforma (sem login)"
+    )]
+    Sincronizar {
+        #[arg(
+            long = "mcp-modo",
+            value_enum,
+            value_name = "MODO",
+            help = "Troca o modo do MCP etus: quente, compacto ou completo"
+        )]
+        mcp_modo: Option<McpMode>,
+        #[arg(
+            long = "com-templates",
+            visible_alias = "with-templates",
+            help = "Liga também os plugins opcionais do perfil"
+        )]
+        com_templates: bool,
+        #[arg(long, help = "Força anexação em arquivos existentes sem marcadores")]
+        force: bool,
+        #[arg(long, help = "Permite gravar fora da raiz do projeto")]
+        allow_outside: bool,
+    },
+    #[command(
+        visible_alias = "doctor",
+        about = "Confere o .etus.json, plugins, regras, MCP etus e skills de cada plataforma (sai com 1 se houver falha)"
+    )]
+    Diagnosticar,
 }
 
 #[derive(Debug, Subcommand)]

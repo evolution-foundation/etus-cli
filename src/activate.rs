@@ -9,10 +9,12 @@ use crate::catalog::{App, SEPARATOR, find_app, truncate};
 use crate::cli;
 use crate::commands::{SKILLS_READ_TOOL, fetch_details, skill_locations};
 use crate::context::Ctx;
+use crate::editors::needs_shared_skills;
 use crate::error::{Error, Result};
 use crate::mcp::{first_text, refusal};
 use crate::naming::slug;
 use crate::output::payload;
+use crate::setup::{ProjectConfig, Target};
 use crate::skills::{
     self, ACTIVATE_MARKER, AppDetail, Generator, Layout, Locations, MARKER, Origin, Ownership, Plan, SkillAgent,
 };
@@ -318,7 +320,7 @@ pub struct Targets {
     pub codex: bool,
 }
 
-pub fn targets_for(agent: Option<SkillAgent>, root: &Path) -> Targets {
+pub fn targets_for(agent: Option<SkillAgent>, root: &Path, configured: Option<&[Target]>) -> Targets {
     match agent {
         Some(SkillAgent::Claude) => Targets {
             claude: true,
@@ -332,11 +334,52 @@ pub fn targets_for(agent: Option<SkillAgent>, root: &Path) -> Targets {
             claude: true,
             codex: true,
         },
-        None => Targets {
-            claude: true,
-            codex: root.join("AGENTS.md").is_file() || root.join(".agents").is_dir(),
+        None => match configured {
+            Some(targets) => Targets {
+                claude: targets.contains(&Target::ClaudeCode),
+                codex: needs_shared_skills(targets),
+            },
+            None => Targets {
+                claude: true,
+                codex: root.join("AGENTS.md").is_file() || root.join(".agents").is_dir(),
+            },
         },
     }
+}
+
+fn readers(targets: Targets, configured: Option<&[Target]>) -> Vec<String> {
+    let names = |want: &dyn Fn(Target) -> bool| -> String {
+        configured
+            .map(|list| {
+                list.iter()
+                    .filter(|t| want(**t))
+                    .map(|t| t.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default()
+    };
+    let mut lines = Vec::new();
+    if targets.claude {
+        let who =
+            names(&|t| t == Target::ClaudeCode || (!targets.codex && matches!(t, Target::Cursor | Target::Copilot)));
+        lines.push(format!(
+            "Skills em .claude/skills: {}",
+            if who.is_empty() { "Claude Code".to_string() } else { who }
+        ));
+    }
+    if targets.codex {
+        let who = names(&|t| t != Target::ClaudeCode);
+        lines.push(format!(
+            "Skills em .agents/skills: {}",
+            if who.is_empty() {
+                "Codex e os editores que leem .agents/skills".to_string()
+            } else {
+                who
+            }
+        ));
+    }
+    lines
 }
 
 #[derive(Debug, Clone)]
@@ -507,7 +550,7 @@ fn origin(ctx: &Ctx, company: Option<String>) -> Origin {
     }
 }
 
-fn global_notice(at: &Locations) -> (usize, Option<String>) {
+pub(crate) fn global_notice(at: &Locations) -> (usize, Option<String>) {
     let mut total = 0;
     let mut places = Vec::new();
     for dir in skills::global_dirs(at) {
@@ -701,7 +744,8 @@ pub fn activate(ctx: &Ctx, targets: &[String], agent: Option<SkillAgent>) -> Res
         let used: Vec<&App> = chosen.iter().filter(|a| members.contains(&a.prefix)).collect();
         wanted_agents.insert(agent_file_name(slug), render_agent(definition, &used, &origin));
     }
-    let targets = targets_for(agent, &root);
+    let configured = ProjectConfig::read(&file).ok().and_then(|c| c.targets);
+    let targets = targets_for(agent, &root, configured.as_deref());
     let steps = plan_files(&Dirs::at(&root), targets, &wanted_skills, &wanted_agents);
     if !ctx.dry_run {
         let cwd = std::env::current_dir()?;
@@ -727,6 +771,7 @@ pub fn activate(ctx: &Ctx, targets: &[String], agent: Option<SkillAgent>) -> Res
         ));
     }
     lines.extend(file_lines);
+    lines.extend(readers(targets, configured.as_deref()));
     if ctx.dry_run {
         lines.push("Simulação (--dry-run): nada foi gravado.".into());
     } else if steps.iter().any(|s| s.plan.changes() > 0) {
@@ -1030,16 +1075,35 @@ mod tests {
     fn codex_follows_the_flag_or_the_project() {
         let root = temp_dir("activate-targets");
         assert_eq!(
-            targets_for(None, &root),
+            targets_for(None, &root, None),
             Targets {
                 claude: true,
                 codex: false
             }
         );
         fs::write(root.join("AGENTS.md"), "x").unwrap();
-        assert!(targets_for(None, &root).codex);
-        assert!(!targets_for(Some(SkillAgent::Claude), &root).codex);
-        assert!(!targets_for(Some(SkillAgent::Codex), &root).claude);
+        assert!(targets_for(None, &root, None).codex);
+        assert!(!targets_for(Some(SkillAgent::Claude), &root, None).codex);
+        assert!(!targets_for(Some(SkillAgent::Codex), &root, None).claude);
+
+        let editors = [Target::ClaudeCode, Target::Cursor, Target::Copilot];
+        assert_eq!(
+            targets_for(None, &root, Some(&editors)),
+            Targets {
+                claude: true,
+                codex: false
+            },
+            "Cursor and Copilot read .claude/skills, so no copy in .agents"
+        );
+        let gemini_only = [Target::Antigravity];
+        assert_eq!(
+            targets_for(None, &root, Some(&gemini_only)),
+            Targets {
+                claude: false,
+                codex: true
+            }
+        );
+        assert!(targets_for(Some(SkillAgent::Todos), &root, Some(&gemini_only)).claude);
     }
 
     #[test]

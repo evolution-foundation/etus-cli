@@ -1,0 +1,40 @@
+{
+  "profiles": [
+    {
+      "id": "app-nexus",
+      "name": "App Nexus",
+      "description": "Apps criados a partir da nexus-stack.",
+      "packs": ["etus-core", "etus-dev", "nexus-stack", "etus-work"]
+    },
+    {
+      "id": "codigo",
+      "name": "Código",
+      "description": "Qualquer outro código: serviço, lib, script, dados com código.",
+      "packs": ["etus-core", "etus-dev"]
+    },
+    {
+      "id": "produto",
+      "name": "Produto",
+      "description": "Documentação de produto, discovery e PRDs.",
+      "packs": ["etus-core", "etus-produto"]
+    },
+    {
+      "id": "design",
+      "name": "Design",
+      "description": "Peças e protótipos no Etus Design, com os templates opcionais.",
+      "packs": ["etus-core", "etus-design", "etus-design-templates"]
+    },
+    {
+      "id": "ops",
+      "name": "Ops",
+      "description": "Infra e operação do router.",
+      "packs": ["etus-core", "etus-ops", "etus-dev"]
+    },
+    {
+      "id": "admin",
+      "name": "Admin",
+      "description": "Quem administra pessoas, acessos e a plataforma no hub.",
+      "packs": ["etus-core", "etus-admin"]
+    }
+  ]
+}

@@ -111,6 +111,7 @@ Ferramentas que alteram dados pedem confirmação no terminal ou `--yes` (sem te
 ## Para agentes
 
 ```sh
+etus setup                      # regras, plugins e MCP etus em cada editor do projeto (veja abaixo)
 etus ativar radar               # só os apps que importam neste projeto, com o guia de cada um (veja abaixo)
 etus skills sincronizar         # uma skill por app que você usa, na pasta do agente (veja abaixo)
 etus --help                     # apps disponíveis (do cache)
@@ -192,6 +193,68 @@ etus skills sincronizar --json               # {"pastas","criadas","atualizadas"
 
 `etus skills limpar-globais` (também `clean-global`) apaga de `~/.claude/skills` e `~/.agents/skills` só as pastas `etus-<app>` com a linha de `etus skills sincronizar`; as feitas à mão e a `etus-cli` ficam. Aceita `--dry-run` e `--json`.
 
+## Configurar o projeto
+
+`etus setup` (também `init`) deixa o projeto pronto para os agentes da Etus em cada editor: regras da Etus, plugins dos perfis no Claude Code, o MCP `etus` e o `.etus.json`. Precisa de `etus login`. É o mesmo setup de `npx github:evolution-foundation/etus-skills setup`: quando a CLI está instalada, o `etus-skills` delega a ela.
+
+```sh
+etus setup                              # detecta o perfil; plataformas do .etus.json (ou todas, na primeira vez)
+etus setup codigo,design --projeto ENG  # soma perfis; o projeto do Plane vai para o .etus.json
+etus setup --target cursor,codex        # soma plataformas às do .etus.json (--substituir-alvos troca a lista)
+etus setup design --com-templates       # liga também os plugins opcionais do perfil
+etus setup --mcp-modo completo          # modo do MCP etus: quente (padrão), compacto ou completo
+etus setup -i                           # pergunta perfil e plataformas
+etus setup sincronizar                  # aplica de novo o .etus.json, sem login (também `sync`)
+etus setup diagnosticar                 # confere tudo; sai com 1 se houver falha (também `doctor`)
+etus --dry-run setup                    # mostra o que mudaria, sem gravar
+```
+
+O que cada editor recebe:
+
+| Plataforma (`--target`) | Regras | MCP `etus` | Skills dos apps (`etus ativar`) |
+|---|---|---|---|
+| Claude Code (`claude-code`) | plugins do perfil em `.claude/settings.json` | `.mcp.json` (`type: http`) | `.claude/skills` |
+| Cursor (`cursor`) | `.cursor/rules/etus.mdc` | `.cursor/mcp.json` | `.agents/skills`, ou `.claude/skills`, que o Cursor também lê |
+| Codex (`codex`) | `AGENTS.md` | `.codex/config.toml` (só em projeto confiável) | `.agents/skills` |
+| Gemini CLI e Antigravity (`antigravity`, `gemini`) | `GEMINI.md` | `.gemini/settings.json` (`httpUrl`) e `.agents/mcp_config.json` (`serverUrl`) | `.agents/skills` |
+| GitHub Copilot (`copilot`) | `.github/copilot-instructions.md` | `.mcp.json`, o mesmo do Claude Code (VS Code e Copilot CLI) | `.agents/skills`, ou `.claude/skills`, que o Copilot também lê |
+| Windsurf (`windsurf`) | `.windsurfrules` | `~/.config/devin/mcp_config.json` (usuário; o legado `~/.codeium/windsurf/mcp_config.json` quando é ele que existe) | `.agents/skills` |
+
+- **Regras.** Ficam entre `<!-- etus-skills:begin -->` e `<!-- etus-skills:end -->`; o resto do arquivo fica como está. Arquivo existente sem os marcadores só com `--force`.
+- **Plugins.** Os do perfil (`.claude-plugin/profiles.json` do etus-skills, embutido na CLI; o `etus-skills` passa o dele em `ETUS_SKILLS_PROFILES`). Só acrescenta: marketplace `etus` com origem customizada e plugin desligado (`false`) ficam como estão.
+- **MCP `etus`.** Endereço `<hub>/mcp?modo=quente` por padrão. No Claude Code que passa pelo AI Router o carregamento sob demanda de ferramentas fica desligado, e o modo `completo` poria todas as ferramentas em toda sessão; o `quente` traz as mais usadas mais as de catálogo (`etus_buscar`, `etus_detalhar`, `etus_consultar`, `etus_executar`). Um `etus` que já existe com outro endereço nunca é trocado sem `--mcp-modo`: o setup avisa e mantém. Os outros servidores do arquivo ficam como estão. O login é OAuth, feito no editor (o setup diz onde), e nenhum token vai para arquivo.
+- **Claude Code: `.mcp.json`, não `claude mcp add -s local`.** O arquivo é declarativo e versionável (o time tem o mesmo modo, sem segredo), funciona sem o `claude` instalado, entra no `--dry-run` e no `diagnosticar`, e serve também ao Copilot. Se houver um `etus` local para a pasta (`~/.claude.json`), que vale mais que o `.mcp.json`, o setup avisa como removê-lo.
+- **Não suportado.** Copilot coding agent na nuvem não aceita MCP com OAuth. O Windsurf não lê MCP do projeto, por isso o `etus` vai no arquivo do usuário. O Codex só lê `.codex/config.toml` de projeto confiável.
+- **Skills globais.** Se houver skills de `etus skills sincronizar` em `~/.claude/skills` ou `~/.agents/skills`, o setup sugere `etus skills limpar-globais`: no global fica só a `etus-cli`, e o resto vai por projeto com `etus ativar`.
+
+### Formato do `.etus.json`
+
+Um arquivo só, na raiz do repositório, versionável, lido e gravado pelo `etus setup`, pelo `etus ativar` e pelo `etus-skills`. Chaves que a CLI não conhece ficam como estão.
+
+```json
+{
+  "project": "ENG",
+  "workspace": "etus",
+  "perfil": ["codigo"],
+  "targets": ["claude-code", "cursor", "codex"],
+  "mcp": { "modo": "quente" },
+  "active": {
+    "apps": ["etusradar"],
+    "packs": { "stalk": ["etusclone", "etuspersonas", "etusradar"] },
+    "agents": { "stalk": ["etusradar"] }
+  }
+}
+```
+
+| Chave | O que é | Quem grava |
+|---|---|---|
+| `project` | Chave do projeto no Plane (maiúsculas); sem ela, as regras usam o nome do repositório | `setup --projeto` |
+| `workspace` | Workspace do Plane (padrão `etus`) | `setup --workspace` |
+| `perfil` | Lista de perfis do etus-skills; cada `setup <perfil>` soma | `setup` |
+| `targets` | Plataformas: `claude-code`, `cursor`, `codex`, `antigravity`, `copilot`, `windsurf`. Ausente num arquivo antigo do `etus-skills` com `perfil`: só `claude-code` | `setup --target` |
+| `mcp.modo` | `quente`, `compacto` ou `completo`; ausente vale `quente` | `setup --mcp-modo` |
+| `active` | Apps, pacotes e agentes ativos neste projeto | `etus ativar` e `etus desativar` |
+
 ## Ativar apps e agentes por projeto
 
 As skills globais entram em toda sessão, de qualquer projeto. `etus ativar` (também `activate`) põe só o que importa dentro do projeto:
@@ -202,13 +265,13 @@ etus ativar arbitragem              # um pacote: a categoria do app no hub
 etus ativar stalk                   # pacote fixo radar, personas e clone (quando nenhuma categoria do hub tem esse nome)
 etus ativar agente:stalk            # um agente do Etus Agentes e os apps das ferramentas dele
 etus ativar                         # gera de novo tudo o que já está ativo
-etus ativar --agente todos radar    # Claude Code e Codex (padrão: Claude, mais Codex se o projeto tem AGENTS.md ou .agents)
+etus ativar --agente todos radar    # .claude/skills e .agents/skills (padrão: as plataformas do .etus.json)
 etus ativos [--json]                # o que está ativo e por quê (também `active`)
 etus desativar arbitragem           # tira e apaga os arquivos gerados (também `deactivate`)
 ```
 
 - **Raiz e estado.** A raiz é a do repositório git (ou a pasta atual fora de um), a mesma do `etus setup`. O que está ativo fica na chave `active` do `.etus.json` da raiz (`apps`, `packs`, `agents`); as outras chaves do arquivo ficam como estão. O `.etus.json` é versionável: o time ativa a mesma lista.
-- **App.** Grava `.claude/skills/etus-<app>/SKILL.md` (e `.agents/skills/etus-<app>/SKILL.md` para o Codex) com a mesma geração de `etus skills sincronizar`: comandos, permissões, e o guia do app (para que serve, receitas e cuidados) vindo de `etus_detalhar` com `app:<prefixo>`. App sem guia publicado sai só com os comandos, e o `etus ativar` diz quais.
+- **App.** Grava `.claude/skills/etus-<app>/SKILL.md` (Claude Code) e `.agents/skills/etus-<app>/SKILL.md` (a pasta aberta do padrão SKILL.md, lida por Codex, Cursor, Copilot, Windsurf, Gemini CLI e Antigravity) conforme as plataformas do `.etus.json`. Cursor e Copilot também leem `.claude/skills`, então sem Codex, Gemini, Antigravity nem Windsurf a cópia em `.agents/skills` não é feita. Sem `targets` no `.etus.json`: Claude Code, mais `.agents/skills` se o projeto tem `AGENTS.md` ou `.agents`. O conteúdo é o da mesma geração de `etus skills sincronizar`: comandos, permissões, e o guia do app (para que serve, receitas e cuidados) vindo de `etus_detalhar` com `app:<prefixo>`. App sem guia publicado sai só com os comandos, e o `etus ativar` diz quais.
 - **Pacote.** Uma categoria de apps do hub (`arbitragem`, `produtividade`...), ou o pacote fixo `stalk` (radar, personas e clone) quando nenhuma categoria tem esse nome. A lista de membros é gravada no `.etus.json`.
 - **Agente.** `agente:<slug>` (ou `agent:<slug>`) lê o agente pelo Extensões (`extensoes__catalogo_ler` com `agente:agentes:<slug>`), grava `.claude/agents/etus-<slug>.md` com as instruções dele e ativa os apps dos prefixos das ferramentas dele. Sem acesso, o etus mostra o link da ação necessária (código 5) ou o motivo (código 4).
 - **Arquivos gerados fora do git.** Cada arquivo gerado entra no `.git/info/exclude`, como o `etus trabalho` faz com o `settings.local.json`: o conteúdo depende da empresa ativa e do acesso de cada pessoa, então cada um gera o seu a partir do `.etus.json`. Arquivo que o repositório já versiona fica versionado.
