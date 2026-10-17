@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod naming;
 pub mod output;
 pub mod router;
+pub mod router_key;
 pub mod schema;
 pub mod setup;
 pub mod skills;
