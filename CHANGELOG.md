@@ -1,6 +1,6 @@
 # Changelog
 
-## Não lançado
+## 0.7.0 (2026-10-16)
 
 Apps e agentes ativados por projeto.
 
