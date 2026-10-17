@@ -10,7 +10,9 @@ use crate::action::{self, Action};
 use crate::auth::oauth::{self, AuthorizationRequest};
 use crate::auth::store::{StoreKind, keychain_supported, store_for};
 use crate::catalog::{App, Tool, find_app};
-use crate::cli::{self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, RouterCmd, SkillsCmd, Toggle, TrabalhoCmd};
+use crate::cli::{
+    self, Commands, ConfigCmd, EmpresaCmd, PerfilCmd, RouterCmd, SetupCmd, SkillsCmd, Toggle, TrabalhoCmd,
+};
 use crate::config;
 use crate::confirm::{self, Decision};
 use crate::context::{Ctx, SET_COMPANY_TOOL};
@@ -44,29 +46,55 @@ pub fn dispatch(ctx: &Ctx, command: Commands) -> Result<()> {
         Commands::Atualizar => refresh(ctx),
         Commands::Skills { acao } => skills(ctx, acao),
         Commands::Setup {
+            acao,
+            perfis,
             target,
             perfil,
             projeto,
             workspace,
+            substituir_alvos,
+            com_templates,
+            mcp_modo,
             force,
             allow_outside,
             interativo,
-        } => {
-            let targets = match target {
-                Some(t) => Some(crate::setup::parse_targets(Some(&t))?),
-                None => None,
-            };
-            let opts = crate::setup::SetupOptions {
-                targets,
-                perfil,
-                projeto,
-                workspace,
+        } => match acao {
+            Some(SetupCmd::Sincronizar {
+                mcp_modo,
+                com_templates,
                 force,
                 allow_outside,
-                interativo,
-            };
-            crate::setup::run(ctx, opts)
-        }
+            }) => crate::setup::sync(
+                ctx,
+                crate::setup::SetupOptions {
+                    mcp_modo,
+                    com_templates,
+                    force,
+                    allow_outside,
+                    ..Default::default()
+                },
+            ),
+            Some(SetupCmd::Diagnosticar) => crate::setup::diagnose(ctx),
+            None => {
+                let targets = match target {
+                    Some(t) => Some(crate::setup::parse_targets(Some(&t))?),
+                    None => None,
+                };
+                let opts = crate::setup::SetupOptions {
+                    targets,
+                    replace_targets: substituir_alvos,
+                    perfis: perfis.into_iter().chain(perfil).collect(),
+                    projeto,
+                    workspace,
+                    force,
+                    allow_outside,
+                    interativo,
+                    com_templates,
+                    mcp_modo,
+                };
+                crate::setup::run(ctx, opts)
+            }
+        },
         Commands::Ativar { alvos, agente } => crate::activate::activate(ctx, &alvos, agente),
         Commands::Desativar { alvos } => crate::activate::deactivate(ctx, &alvos),
         Commands::Ativos => crate::activate::show(ctx),

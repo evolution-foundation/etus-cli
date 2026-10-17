@@ -627,7 +627,11 @@ pub fn global_dirs(at: &Locations) -> Vec<PathBuf> {
 }
 
 pub fn synced_skills(dir: &Path) -> Vec<String> {
-    plan(dir, &BTreeMap::new(), &[MARKER]).remove
+    synced_with(dir, &[MARKER])
+}
+
+pub fn synced_with(dir: &Path, markers: &[&str]) -> Vec<String> {
+    plan(dir, &BTreeMap::new(), markers).remove
 }
 
 #[cfg(test)]
